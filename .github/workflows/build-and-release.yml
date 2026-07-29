@@ -1,0 +1,220 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS universal
+            os: macos-14
+            artifact: macOS-universal
+          - name: Windows x64
+            os: windows-latest
+            artifact: Windows-x64
+          - name: Linux x64
+            os: ubuntu-24.04
+            artifact: Linux-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxi-dev \
+            libglu1-mesa-dev \
+            mesa-common-dev \
+            libegl-dev
+
+      - name: Configure macOS universal
+        if: runner.os == 'macOS'
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure Windows x64
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -A x64
+
+      - name: Verify release tag matches project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import re
+
+          cmake = pathlib.Path("CMakeLists.txt").read_text(encoding="utf-8")
+          match = re.search(
+              r"project\s*\(\s*default_distortion\s+VERSION\s+([0-9.]+)",
+              cmake,
+          )
+          assert match is not None, "Could not read the CMake project version"
+          project_version = match.group(1)
+          tag_version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          assert project_version == tag_version, (
+              f"Tag v{tag_version} does not match CMake version "
+              f"{project_version}"
+          )
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="ci-${GITHUB_SHA::7}"
+          fi
+          root="packages/default_distortion-${version}-macOS-universal"
+          mkdir -p "$root/AU" "$root/VST3" "$root/Standalone"
+          ditto \
+            build/DefaultDistortion_artefacts/Release/AU/default_distortion.component \
+            "$root/AU/default_distortion.component"
+          ditto \
+            build/DefaultDistortion_artefacts/Release/VST3/default_distortion.vst3 \
+            "$root/VST3/default_distortion.vst3"
+          ditto \
+            build/DefaultDistortion_artefacts/Release/Standalone/default_distortion.app \
+            "$root/Standalone/default_distortion.app"
+          cp BUILDING.md LICENSE.md README.md THIRD_PARTY_NOTICES.md "$root/"
+          cp -R LICENSES "$root/"
+          ditto -c -k --keepParent \
+            "$root" \
+            "packages/default_distortion-${version}-macOS-universal.zip"
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $version = "ci-" + $env:GITHUB_SHA.Substring(0, 7)
+          }
+          $root = "packages/default_distortion-$version-Windows-x64"
+          New-Item -ItemType Directory -Force "$root/VST3", "$root/Standalone"
+          Copy-Item -Recurse `
+            "build/DefaultDistortion_artefacts/Release/VST3/default_distortion.vst3" `
+            "$root/VST3/default_distortion.vst3"
+          Copy-Item `
+            "build/DefaultDistortion_artefacts/Release/Standalone/default_distortion.exe" `
+            "$root/Standalone/default_distortion.exe"
+          Copy-Item `
+            "BUILDING.md", "LICENSE.md", "README.md", "THIRD_PARTY_NOTICES.md" `
+            "$root/"
+          Copy-Item -Recurse "LICENSES" "$root/LICENSES"
+          Compress-Archive `
+            -Path $root `
+            -DestinationPath "packages/default_distortion-$version-Windows-x64.zip"
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="ci-${GITHUB_SHA::7}"
+          fi
+          root="packages/default_distortion-${version}-Linux-x64"
+          mkdir -p "$root/VST3" "$root/LV2" "$root/Standalone"
+          cp -a \
+            build/DefaultDistortion_artefacts/Release/VST3/default_distortion.vst3 \
+            "$root/VST3/"
+          cp -a \
+            build/DefaultDistortion_artefacts/Release/LV2/default_distortion.lv2 \
+            "$root/LV2/"
+          cp \
+            build/DefaultDistortion_artefacts/Release/Standalone/default_distortion \
+            "$root/Standalone/"
+          cp BUILDING.md LICENSE.md README.md THIRD_PARTY_NOTICES.md "$root/"
+          cp -R LICENSES "$root/"
+          tar -C packages -czf \
+            "packages/default_distortion-${version}-Linux-x64.tar.gz" \
+            "$(basename "$root")"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: default_distortion-${{ matrix.artifact }}
+          path: |
+            packages/*.zip
+            packages/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view \
+            "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            >/dev/null 2>&1; then
+            gh release upload \
+              "$GITHUB_REF_NAME" \
+              release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create \
+              "$GITHUB_REF_NAME" \
+              release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes
+          fi

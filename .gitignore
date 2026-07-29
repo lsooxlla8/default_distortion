@@ -1,0 +1,8 @@
+.DS_Store
+build/
+cmake-build-*/
+dist/
+packages/
+*.jucer
+*.xcodeproj
+*.xcworkspace
