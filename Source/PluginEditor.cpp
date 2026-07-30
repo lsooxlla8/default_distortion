@@ -275,9 +275,7 @@ void GeometricLookAndFeel::drawRotarySlider (
     const auto markerX = inner.getX()
         + progress * juce::jmax (0.0f, inner.getWidth() - markerSize);
     graphics.setColour (
-        inverted
-            ? background
-            : background.interpolatedWith (foreground, 0.72f));
+        background.interpolatedWith (foreground, 0.72f));
     graphics.fillRect (
         markerX,
         inner.getY() + 3.0f * scale,
@@ -823,6 +821,27 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
         state, ParamIDs::output, output.slider);
     qualityAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::quality, quality.slider);
+    if (auto* parameter = state.getParameter (ParamIDs::mode))
+    {
+        modeAttachment = std::make_unique<juce::ParameterAttachment> (
+            *parameter,
+            [this] (float value)
+            {
+                const auto mode = juce::jlimit (
+                    0,
+                    DistortionEngine::modeCount - 1,
+                    juce::roundToInt (value));
+                updateCharacterControl (mode);
+                const auto& name =
+                    DistortionEngine::getModeNames()[static_cast<size_t> (mode)];
+                modeButton.setButtonText (
+                    juce::String (mode + 1).paddedLeft ('0', 2)
+                    + "  " + name.toUpperCase());
+                if (characterAttachment != nullptr)
+                    characterAttachment->sendInitialUpdate();
+            });
+        modeAttachment->sendInitialUpdate();
+    }
     if (auto* parameter = state.getParameter (ParamIDs::autoGain))
     {
         autoGainAttachment = std::make_unique<juce::ParameterAttachment> (
@@ -939,6 +958,7 @@ void DefaultDistortionAudioProcessorEditor::selectMode (int mode)
         parameter->endChangeGesture();
     }
 
+    updateCharacterControl (selected);
     if (characterAttachment != nullptr)
         characterAttachment->setValueAsCompleteGesture (
             DistortionEngine::getDefaultCharacter (selected));
@@ -1001,6 +1021,10 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
                 ? ownerProcessor.getSampleRate()
                 : 48000.0);
     };
+    drive.slider.updateText();
+    character.slider.updateText();
+    drive.repaint();
+    character.repaint();
 }
 
 void DefaultDistortionAudioProcessorEditor::togglePalette()
@@ -1135,9 +1159,9 @@ void DefaultDistortionAudioProcessorEditor::resized()
     asymStereoButton.setBounds (scaled (374, 107, 24, 69));
     tone.setBounds (scaled (401, 78, controlWidth, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
-    mix.setBounds (scaled (143, 212, controlWidth, controlHeight));
-    output.setBounds (scaled (272, 212, controlWidth, controlHeight));
-    quality.setBounds (scaled (401, 212, controlWidth, controlHeight));
+    output.setBounds (scaled (143, 212, controlWidth, controlHeight));
+    quality.setBounds (scaled (272, 212, controlWidth, controlHeight));
+    mix.setBounds (scaled (401, 212, controlWidth, controlHeight));
 
     responseDisplay.setBounds (scaled (544, 78, 302, 262));
     sendLookAndFeelChange();

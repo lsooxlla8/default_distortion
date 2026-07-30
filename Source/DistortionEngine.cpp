@@ -385,6 +385,7 @@ float DistortionEngine::getDefaultCharacter (int mode) noexcept
     return selected == Mode::fullWaveRectifier
             || selected == Mode::classBSaturation
             || selected == Mode::phaseDistortion
+            || selected == Mode::deltaCrusher
         ? 0.5f
         : 0.0f;
 }
@@ -560,6 +561,28 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
         driveNormalised,
         simulationSampleRate,
         displaySampleRate);
+    float softClipPositiveReference = 1.0f;
+    float softClipNegativeReference = -1.0f;
+    if (mode == Mode::morphSoftClip)
+    {
+        std::array<StageState, maximumStages> positiveStates {};
+        std::array<StageState, maximumStages> negativeStates {};
+        softClipPositiveReference = processCascadeSample (
+            1.0f,
+            modeContext,
+            stageGain,
+            stageDepth,
+            stages,
+            positiveStates);
+        softClipNegativeReference = processCascadeSample (
+            -1.0f,
+            modeContext,
+            stageGain,
+            stageDepth,
+            stages,
+            negativeStates);
+    }
+
     for (int point = 0; point < Visualization::pointCount; ++point)
     {
         const auto position = static_cast<float> (point)
@@ -580,12 +603,18 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
                 stageDepth,
                 stages,
                 states);
-        // Match the canonical clip preview to the final 0 dBFS ceiling shown
-        // by the revised Hard Clip visualization. Vital's rational tanh can
-        // overshoot unity slightly for very large inputs, but the plug-in's
-        // zero-dB output path clamps that overshoot.
+        // The Soft Clip graph uses the same 0 dB reference as Hard Clip:
+        // a +1/-1 input point is drawn exactly on the +1/-1 output line.
+        // This is display-only normalisation; the Vital transfer used by the
+        // audio path remains untouched.
         if (mode == Mode::morphSoftClip)
-            displayedOutput = clampBipolar (displayedOutput);
+        {
+            const auto reference = displayedOutput >= 0.0f
+                ? std::abs (softClipPositiveReference)
+                : std::abs (softClipNegativeReference);
+            displayedOutput = clampBipolar (
+                displayedOutput / juce::jmax (1.0e-6f, reference));
+        }
         visualization.output[static_cast<size_t> (point)] = displayedOutput;
     }
 }
@@ -645,10 +674,15 @@ void DistortionEngine::primeAutoGain (const Parameters& parameters)
     deterministicGainLinear = parameters.autoGainMode > 0
         ? lookupDeterministicGain (parameters, sampleRate)
         : 1.0f;
-    autoGainLinear = deterministicGainLinear;
+    normalGainLinear = deterministicGainLinear;
+    autoGainLinear = parameters.autoGainMode == 1
+        ? normalGainLinear
+        : deterministicGainLinear;
     lastGainSignature = signature;
     lastSmartGainSignature = hashSmartGainParameters (parameters);
     lastAutoGainMode = parameters.autoGainMode;
+    normalGainTracking = false;
+    normalGainTrackingSamples = 0;
     resetSmartAutoGain();
 }
 
@@ -680,6 +714,9 @@ void DistortionEngine::reset()
     wetDelayPositions.fill (0);
     autoGainLinear = 1.0f;
     deterministicGainLinear = 1.0f;
+    normalGainLinear = 1.0f;
+    normalGainTracking = false;
+    normalGainTrackingSamples = 0;
     lastGainSignature = 0;
     lastSmartGainSignature = 0;
     resetSmartAutoGain();
@@ -860,7 +897,6 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
                 stage.reset();
         for (auto& state : spectralStates)
             state.reset();
-        autoGainLinear = 1.0f;
         lastMode = requestedMode;
     }
 
@@ -874,6 +910,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     if (requiresGainCalibration)
     {
         lastGainSignature = gainSignature;
+        normalGainTracking = parameters.autoGainMode == 1;
+        normalGainTrackingSamples = 0;
         resetSmartAutoGain();
     }
     else if (parameters.autoGainMode == 2 && lastAutoGainMode != 2)
@@ -913,6 +951,10 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     deterministicGainLinear = parameters.autoGainMode > 0
         ? lookupDeterministicGain (smoothed, sampleRate)
         : 1.0f;
+    if (parameters.autoGainMode == 1
+        && normalGainTracking
+        && normalGainTrackingSamples == 0)
+        normalGainLinear = deterministicGainLinear;
 
     updateToneFilters (smoothed.tone);
     processTonePre (buffer);
@@ -958,6 +1000,11 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     const auto smartMeasurementActive =
         parameters.autoGainMode == 2
         && ! smartGainLocked;
+    const auto normalMeasurementActive =
+        parameters.autoGainMode == 1
+        && normalGainTracking;
+    const auto levelMeasurementActive =
+        smartMeasurementActive || normalMeasurementActive;
 
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -975,7 +1022,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
 
             dry[sample] = alignedDry;
             wet[sample] = alignedWet;
-            if (smartMeasurementActive)
+            if (levelMeasurementActive)
             {
                 dryEnergy += static_cast<double> (alignedDry) * alignedDry;
                 wetEnergy += static_cast<double> (alignedWet) * alignedWet;
@@ -986,6 +1033,29 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     }
 
     constexpr auto silenceEnergy = 1.0e-10;
+    if (normalMeasurementActive)
+    {
+        normalGainTrackingSamples += samples;
+        const auto hasAlignedAudio =
+            normalGainTrackingSamples >= fixedLatencySamples + samples;
+        if (hasAlignedAudio
+            && dryEnergy > silenceEnergy
+            && wetEnergy > silenceEnergy)
+        {
+            normalGainLinear = juce::jlimit (
+                juce::Decibels::decibelsToGain (-72.0f),
+                juce::Decibels::decibelsToGain (48.0f),
+                static_cast<float> (std::sqrt (dryEnergy / wetEnergy)));
+        }
+
+        const auto parametersSettled =
+            std::abs (smoothedDriveDb - parameters.driveDb) < 0.005f
+            && std::abs (smoothedCharacter - parameters.character) < 0.0005f
+            && std::abs (smoothedAsymmetry - parameters.asymmetry) < 0.0005f;
+        if (hasAlignedAudio && parametersSettled)
+            normalGainTracking = false;
+    }
+
     if (smartMeasurementActive)
     {
         constexpr auto settleSeconds = 0.22;
@@ -1100,16 +1170,12 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
 
     const auto targetAutoGain = parameters.autoGainMode <= 0
         ? 1.0f
-        : (parameters.autoGainMode == 1 || ! smartGainLocked
-            ? deterministicGainLinear
-            : smartGainLinear);
-    const auto gainAtBlockStart = autoGainLinear;
-    constexpr auto smoothingSeconds = 0.010;
-    const auto coefficient = static_cast<float> (std::exp (
-        -static_cast<double> (samples)
-        / juce::jmax (1.0, sampleRate * smoothingSeconds)));
-    autoGainLinear = targetAutoGain
-        + coefficient * (autoGainLinear - targetAutoGain);
+        : (parameters.autoGainMode == 1
+            ? normalGainLinear
+            : (! smartGainLocked
+                ? deterministicGainLinear
+                : smartGainLinear));
+    autoGainLinear = targetAutoGain;
 
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -1117,11 +1183,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
         const auto* dry = dryBuffer.getReadPointer (channel);
         for (int sample = 0; sample < samples; ++sample)
         {
-            const auto ramp = samples > 1
-                ? static_cast<float> (sample) / static_cast<float> (samples - 1)
-                : 1.0f;
-            const auto makeup = lerp (gainAtBlockStart, autoGainLinear, ramp);
-            auto mixed = lerp (dry[sample], wet[sample] * makeup, mix)
+            auto mixed = lerp (
+                dry[sample], wet[sample] * autoGainLinear, mix)
                 * outputGain;
             if (smoothed.outputDb <= 0.001f)
                 mixed = juce::jlimit (-1.0f, 1.0f, mixed);
@@ -1341,8 +1404,10 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
 
         case Mode::signSquare:
             // Threshold and edge hardness are deliberately independent:
-            // Character moves the switching point while Drive sharpens it.
-            p[0] = 0.78f * c;
+            // Character moves a deliberately bounded switching point while
+            // Drive sharpens it. The range narrows at high Drive so Threshold
+            // cannot push ordinary signals into a flat, DC-only state.
+            p[0] = lerp (0.24f, 0.12f, smoothStep01 (drive)) * c;
             p[1] = lerp (0.85f, 32.0f, drive);
             break;
 
@@ -1433,7 +1498,9 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
         }
 
         case Mode::deltaCrusher:
-            p[0] = std::pow (10.0f, lerp (-6.0f, 0.0f, c01));
+            p[0] = std::pow (
+                10.0f,
+                lerp (-4.0f, -0.125f, std::pow (c01, 0.25f)));
             p[1] = lerp (1.0f, 4.0f, smoothStep01 (drive));
             break;
 
@@ -1461,10 +1528,12 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
         {
             const auto curve = smoothStep01 (c01);
             p[0] = smoothingCoefficient (
-                processingSampleRate, lerp (0.0015f, 0.090f, curve));
-            p[1] = lerp (0.04f, 0.82f, curve);
-            p[2] = lerp (1.05f, 2.65f, curve);
-            p[3] = 1.0f / p[2];
+                processingSampleRate, lerp (0.00035f, 0.025f, curve));
+            p[1] = lerp (0.05f, 0.65f, curve);
+            p[2] = lerp (1.0f, 2.8f, curve);
+            p[3] = 1.0f / std::tanh (p[2] * (1.0f + p[1]));
+            p[4] = curve;
+            p[5] = lerp (1.2f, 2.0f, curve);
             break;
         }
 
@@ -1747,10 +1816,17 @@ float DistortionEngine::processModeSample (float input,
         case Mode::deltaCrusher:
         {
             const auto predictionError = x - state.memory;
-            const auto quantisedError =
-                std::round (predictionError / p[0]) * p[0];
-            state.memory = juce::jlimit (
-                -p[1], p[1], state.memory + quantisedError);
+            state.secondary += predictionError;
+            const auto requestedDelta =
+                std::round (state.secondary / p[0]) * p[0];
+            const auto nextMemory = juce::jlimit (
+                -p[1], p[1], state.memory + requestedDelta);
+            const auto appliedDelta = nextMemory - state.memory;
+            state.memory = nextMemory;
+            state.secondary = juce::jlimit (
+                -2.0f * p[0],
+                2.0f * p[0],
+                state.secondary - appliedDelta);
             state.previousInput = x;
             return state.memory / p[1];
         }
@@ -1792,9 +1868,21 @@ float DistortionEngine::processModeSample (float input,
         case Mode::transformerCore:
         {
             state.memory = x + p[0] * (state.memory - x);
-            const auto fluxCoupled =
-                (x + p[1] * state.memory) / (1.0f + p[1]);
-            return std::tanh (p[2] * fluxCoupled) * p[3];
+            const auto cleanCore =
+                std::tanh (x) / std::tanh (1.0f);
+            const auto magnetised =
+                std::tanh (p[2] * (x + p[1] * state.memory)) * p[3];
+            const auto remanence =
+                std::tanh (p[5] * state.memory) / std::tanh (p[5]);
+            const auto remanenceMix = 1.2f * p[4];
+            constexpr auto coreSoftness = 1.1f;
+            const auto magneticCore =
+                std::tanh (
+                    coreSoftness
+                    * (magnetised + remanenceMix * remanence))
+                / std::tanh (
+                    coreSoftness * (1.0f + remanenceMix));
+            return lerp (cleanCore, magneticCore, p[4]);
         }
 
         case Mode::slewLimiter:

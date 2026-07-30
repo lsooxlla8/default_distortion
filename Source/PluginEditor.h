@@ -191,6 +191,7 @@ private:
     std::unique_ptr<SliderAttachment> mixAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
     std::unique_ptr<SliderAttachment> qualityAttachment;
+    std::unique_ptr<juce::ParameterAttachment> modeAttachment;
     std::unique_ptr<juce::ParameterAttachment> autoGainAttachment;
     std::unique_ptr<juce::ParameterAttachment> characterAttachment;
 

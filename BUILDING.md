@@ -67,10 +67,13 @@ web browser or networking.
 
 ## Auto Gain reference tables
 
-Ordinary Auto Gain uses generated lookup tables so parameter changes do not
-wait for a background calibration pass. **Every change to a distortion
-algorithm, its Drive/Character/Asymmetry mapping, stage behaviour, DC
-filtering, or reference calibration must regenerate and commit both tables.**
+Ordinary Auto Gain starts from generated lookup tables, then trims that
+coefficient from the already-aligned dry/wet RMS while a relevant parameter is
+moving and freezes it as soon as the smoothed DSP parameters settle. It has no
+additional gain-smoothing delay and does not keep following programme level
+after the edit. **Every change to a distortion algorithm, its
+Drive/Character/Asymmetry mapping, stage behaviour, DC filtering, or reference
+calibration must regenerate and commit both tables.**
 
 Build the test generator first, then regenerate the main and dense Spectral
 Clip tables:

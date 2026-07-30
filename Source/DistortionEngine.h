@@ -326,6 +326,7 @@ private:
     float smoothedOutputDb = 0.0f;
     float autoGainLinear = 1.0f;
     float deterministicGainLinear = 1.0f;
+    float normalGainLinear = 1.0f;
     float smartGainLinear = 1.0f;
     double smartWetPeak = 0.0;
     double smartDrySliceEnergy = 0.0;
@@ -340,6 +341,8 @@ private:
     int smartLoudnessBlockCount = 0;
     int smartStableSamples = 0;
     int smartMeasuredSamples = 0;
+    int normalGainTrackingSamples = 0;
+    bool normalGainTracking = false;
     bool smartGainLocked = false;
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };

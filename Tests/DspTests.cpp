@@ -301,12 +301,17 @@ void testVitalClipTransfers (TestContext& context)
         for (size_t point = 0; point < view.input.size(); ++point)
         {
             const auto input = view.input[point];
-            const auto expected = vitalTanhReference (input);
+            const auto expected = juce::jlimit (
+                -1.0f,
+                1.0f,
+                vitalTanhReference (input)
+                    / std::abs (vitalTanhReference (1.0f)));
             context.expect (
                 std::abs (view.output[point] - expected) < 2.0e-6f,
                 dd::DistortionEngine::getModeNames()[
                     static_cast<size_t> (parameters.mode)]
-                    + " no longer matches the copied Vital transfer");
+                    + " preview no longer uses the Vital curve with a shared "
+                      "Hard Clip 0 dB reference");
         }
     }
 
@@ -1658,7 +1663,7 @@ void testRevisedAlgorithmContracts (TestContext& context)
     const auto thresholdDistance = visualizationDistance (
         lowThreshold, highThreshold);
     context.expect (
-        thresholdDistance > 0.30 && thresholdDistance < 1.35,
+        thresholdDistance > 0.10 && thresholdDistance < 0.75,
         "Sign/Square Threshold is not useful and bounded (distance "
             + juce::String (thresholdDistance, 3) + ")");
 
@@ -1676,10 +1681,41 @@ void testRevisedAlgorithmContracts (TestContext& context)
         parameters, sampleRate, transformerHigh);
     const auto transformerDistance =
         visualizationDistance (transformerLow, transformerHigh);
+    double transformerLowEnergy = 0.0;
+    double transformerHighEnergy = 0.0;
+    double transformerCrossEnergy = 0.0;
+    for (size_t point = 0; point < transformerLow.output.size(); ++point)
+    {
+        const auto low = static_cast<double> (
+            transformerLow.output[point]);
+        const auto high = static_cast<double> (
+            transformerHigh.output[point]);
+        transformerLowEnergy += low * low;
+        transformerHighEnergy += high * high;
+        transformerCrossEnergy += low * high;
+    }
+    const auto transformerBestScale =
+        transformerCrossEnergy
+        / juce::jmax (1.0e-12, transformerLowEnergy);
+    double transformerScaledResidual = 0.0;
+    for (size_t point = 0; point < transformerLow.output.size(); ++point)
+    {
+        const auto error =
+            static_cast<double> (transformerHigh.output[point])
+            - transformerBestScale
+                * static_cast<double> (transformerLow.output[point]);
+        transformerScaledResidual += error * error;
+    }
+    const auto transformerResidualRatio =
+        transformerScaledResidual
+        / juce::jmax (1.0e-12, transformerHighEnergy);
     context.expect (
-        transformerDistance > 0.12,
-        "Transformer Core Character still has too little influence (distance "
-            + juce::String (transformerDistance, 3) + ")");
+        transformerDistance > 0.12
+            && transformerResidualRatio > 0.015,
+        "Transformer Core still behaves like a volume control (distance "
+            + juce::String (transformerDistance, 3)
+            + ", residual "
+            + juce::String (transformerResidualRatio, 3) + ")");
 
     parameters.driveDb = 20.0f;
     parameters.stages = 4;
@@ -1744,6 +1780,24 @@ void testRequestedDevelopmentFixes (TestContext& context)
         context.expect (
             std::abs (value) <= 1.000001f,
             "Soft Clip visualization exceeds the revised 0 dBFS ceiling");
+    parameters.driveDb = 0.0f;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, softClip);
+    auto upper = size_t { 1 };
+    while (upper < softClip.input.size()
+           && softClip.input[upper] < 1.0f)
+        ++upper;
+    upper = juce::jlimit (
+        size_t { 1 }, softClip.input.size() - 1, upper);
+    const auto lower = upper - 1;
+    const auto span = softClip.input[upper] - softClip.input[lower];
+    const auto fraction = (1.0f - softClip.input[lower])
+        / juce::jmax (1.0e-6f, span);
+    const auto outputAtZeroDb = softClip.output[lower]
+        + fraction * (softClip.output[upper] - softClip.output[lower]);
+    context.expect (
+        std::abs (outputAtZeroDb - 1.0f) < 0.002f,
+        "Soft Clip white 0 dB reference does not align with the grey input");
 
     parameters.driveDb = 18.0f;
     parameters.mode = static_cast<int> (
@@ -1774,8 +1828,15 @@ void testRequestedDevelopmentFixes (TestContext& context)
     const auto signThresholdDistance = visualizationDistance (
         negativeThreshold, positiveThreshold);
     context.expect (
-        signThresholdDistance > 0.30 && signThresholdDistance < 1.35,
+        signThresholdDistance > 0.10 && signThresholdDistance < 0.75,
         "Sign/Square Threshold is not useful and bounded after decoupling");
+    const auto signMinimum = *std::min_element (
+        positiveThreshold.output.begin(), positiveThreshold.output.end());
+    const auto signMaximum = *std::max_element (
+        positiveThreshold.output.begin(), positiveThreshold.output.end());
+    context.expect (
+        signMaximum - signMinimum > 1.5f,
+        "Sign/Square Threshold removes the signal at high Drive");
 
     parameters.driveDb = 18.0f;
     parameters.character = 1.0f;
@@ -1792,6 +1853,44 @@ void testRequestedDevelopmentFixes (TestContext& context)
     context.expect (
         visualizationDistance (fullWave, halfWave) > 0.28,
         "Half-Wave remains too close to Full-Wave at full conduction");
+
+    {
+        dd::Parameters deltaView;
+        deltaView.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::deltaCrusher);
+        deltaView.driveDb = 18.0f;
+        deltaView.stages = 1;
+        deltaView.character = 0.0f;
+        dd::DistortionEngine::Visualization stepZero;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepZero);
+        deltaView.character = 0.25f;
+        dd::DistortionEngine::Visualization stepQuarter;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepQuarter);
+        deltaView.character = 0.5f;
+        dd::DistortionEngine::Visualization stepHalf;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepHalf);
+        deltaView.character = 1.0f;
+        dd::DistortionEngine::Visualization stepFull;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepFull);
+        const auto zeroToQuarter =
+            visualizationDistance (stepZero, stepQuarter);
+        const auto quarterToHalf =
+            visualizationDistance (stepQuarter, stepHalf);
+        const auto halfToFull =
+            visualizationDistance (stepHalf, stepFull);
+        context.expect (
+            zeroToQuarter > 0.002
+                && quarterToHalf > 0.01
+                && halfToFull > 0.03,
+            "Delta Crusher Step still wastes the first half of its range ("
+                + juce::String (zeroToQuarter, 4) + ", "
+                + juce::String (quarterToHalf, 4) + ", "
+                + juce::String (halfToFull, 4) + ")");
+    }
 
     {
         dd::DistortionEngine engine;
@@ -1832,8 +1931,122 @@ void testRequestedDevelopmentFixes (TestContext& context)
         const auto mean = sum / juce::jmax (1, count);
         const auto meanAbsolute = absoluteSum / juce::jmax (1, count);
         context.expect (
-            std::abs (mean) < 0.08 * juce::jmax (1.0e-6, meanAbsolute),
+            meanAbsolute > 1.0e-3
+                && std::abs (mean)
+                    < 0.08 * juce::jmax (1.0e-6, meanAbsolute),
             "Delta Crusher reconstruction has collapsed into DC");
+    }
+
+    context.expect (
+        std::abs (
+            dd::DistortionEngine::getDefaultCharacter (
+                static_cast<int> (
+                    dd::DistortionEngine::Mode::deltaCrusher))
+            - 0.5f) < 1.0e-6f,
+        "Delta Crusher Step does not default to 50%");
+
+    {
+        const std::array<std::pair<dd::DistortionEngine::Mode, float>, 8>
+            dcModes {
+                std::pair {
+                    dd::DistortionEngine::Mode::hardClip, 0.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::fullWaveRectifier, 1.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::softFullWaveRectifier, 0.7f },
+                std::pair {
+                    dd::DistortionEngine::Mode::halfWaveRectifier, 1.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::harmonicMorph, -1.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::transistorFet, 0.7f },
+                std::pair {
+                    dd::DistortionEngine::Mode::signSquare, 0.7f },
+                std::pair {
+                    dd::DistortionEngine::Mode::triodeStage, 0.7f }
+            };
+        for (const auto [mode, character] : dcModes)
+        {
+            dd::DistortionEngine engine;
+            engine.prepare (sampleRate, blockSize, 1);
+            dd::Parameters dc;
+            dc.mode = static_cast<int> (mode);
+            dc.driveDb = 18.0f;
+            dc.character = character;
+            dc.asymmetry =
+                mode == dd::DistortionEngine::Mode::hardClip ? 0.7f : 0.0f;
+            dc.autoGainMode = 0;
+            juce::AudioBuffer<float> buffer (1, blockSize);
+            float tailPeak = 0.0f;
+            for (int block = 0; block < 120; ++block)
+            {
+                for (int sample = 0; sample < blockSize; ++sample)
+                    buffer.setSample (0, sample, 0.35f);
+                engine.process (buffer, dc);
+                if (block < 80)
+                    continue;
+                for (int sample = 0; sample < blockSize; ++sample)
+                    tailPeak = juce::jmax (
+                        tailPeak,
+                        std::abs (buffer.getSample (0, sample)));
+            }
+            context.expect (
+                tailPeak < 1.0e-3f,
+                "DC blocker is not consistently active in mode "
+                    + juce::String (
+                        static_cast<int> (mode) + 1));
+        }
+    }
+
+    {
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, blockSize, 1);
+        dd::Parameters hard;
+        hard.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::hardClip);
+        hard.driveDb = 0.0f;
+        hard.character = 0.0f;
+        hard.autoGainMode = 1;
+        hard.mix = 1.0f;
+        engine.primeAutoGain (hard);
+        juce::AudioBuffer<float> buffer (1, blockSize);
+        double phase = 0.0;
+        double energy = 0.0;
+        int count = 0;
+        for (int block = 0; block < 100; ++block)
+        {
+            if (block == 12)
+                hard.driveDb = 36.0f;
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                buffer.setSample (
+                    0,
+                    sample,
+                    0.25118864f * static_cast<float> (std::sin (phase)));
+                phase += juce::MathConstants<double>::twoPi * 173.0
+                    / sampleRate;
+            }
+            engine.process (buffer, hard);
+            if (block < 70)
+                continue;
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                energy += static_cast<double> (value) * value;
+                ++count;
+            }
+        }
+        const auto outputRms = std::sqrt (
+            energy / juce::jmax (1, count));
+        const auto inputRms = 0.25118864 / std::sqrt (2.0);
+        const auto errorDb = std::abs (
+            juce::Decibels::gainToDecibels (
+                static_cast<float> (outputRms / inputRms),
+                -100.0f));
+        context.expect (
+            errorDb < 0.5f,
+            "Instant Auto Gain misses a -12 dBFS Hard Clip sine by "
+                + juce::String (errorDb, 2) + " dB");
     }
 
     {
