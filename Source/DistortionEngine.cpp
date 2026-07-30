@@ -1,4 +1,6 @@
 #include "DistortionEngine.h"
+#include "AutoGainTable.h"
+#include "SpectralAutoGainTable.h"
 
 #include <algorithm>
 #include <bit>
@@ -29,6 +31,12 @@ float unipolarCharacter (float value) noexcept
 float bipolarTo01 (float value) noexcept
 {
     return 0.5f * (juce::jlimit (-1.0f, 1.0f, value) + 1.0f);
+}
+
+float smoothStep01 (float value) noexcept
+{
+    const auto bounded = juce::jlimit (0.0f, 1.0f, value);
+    return bounded * bounded * (3.0f - 2.0f * bounded);
 }
 
 // Scalar adaptation of Vital's GPLv3 futils::tanh approximation and the
@@ -205,23 +213,65 @@ float finishDirectStage (
     return value;
 }
 
-bool needsDcBlocking (DistortionEngine::Mode mode,
-                      float character,
-                      float asymmetry) noexcept
+float dcBlockingAmount (DistortionEngine::Mode mode,
+                        float character,
+                        float asymmetry) noexcept
 {
-    if (std::abs (asymmetry) > 1.0e-6f)
-        return true;
-
     if (mode == DistortionEngine::Mode::fullWaveRectifier
         || mode == DistortionEngine::Mode::softFullWaveRectifier
         || mode == DistortionEngine::Mode::halfWaveRectifier
         || mode == DistortionEngine::Mode::harmonicMorph
         || mode == DistortionEngine::Mode::transistorFet)
-        return true;
+        return 1.0f;
 
-    return (mode == DistortionEngine::Mode::signSquare
-            || mode == DistortionEngine::Mode::triodeStage)
-        && std::abs (character) > 1.0e-6f;
+    const auto characterCreatesDc =
+        mode == DistortionEngine::Mode::signSquare
+        || mode == DistortionEngine::Mode::triodeStage;
+    const auto canGenerateDc =
+        characterCreatesDc || std::abs (asymmetry) > 1.0e-6f;
+    if (! canGenerateDc)
+        return 0.0f;
+
+    // Keep the blocker running at all times, then fade in its contribution
+    // through the first five percent of any DC-producing bias control. This
+    // avoids switching a stateful filter into the signal path abruptly.
+    const auto amount = characterCreatesDc
+        ? juce::jmax (std::abs (character), std::abs (asymmetry))
+        : std::abs (asymmetry);
+    return smoothStep01 (amount / 0.05f);
+}
+
+template <typename Value, size_t Size>
+struct TablePosition
+{
+    size_t lower = 0;
+    size_t upper = 0;
+    float fraction = 0.0f;
+};
+
+template <typename Value, size_t Size>
+TablePosition<Value, Size> tablePosition (
+    const std::array<Value, Size>& values,
+    Value requested) noexcept
+{
+    if (requested <= values.front())
+        return {};
+    if (requested >= values.back())
+        return { Size - 1, Size - 1, 0.0f };
+
+    for (size_t upper = 1; upper < Size; ++upper)
+        if (requested <= values[upper])
+        {
+            const auto lower = upper - 1;
+            const auto span = values[upper] - values[lower];
+            return {
+                lower,
+                upper,
+                static_cast<float> (
+                    (requested - values[lower]) / span)
+            };
+        }
+    return { Size - 1, Size - 1, 0.0f };
 }
 } // namespace
 
@@ -232,21 +282,9 @@ DistortionEngine::DistortionEngine()
             0.5f - 0.5f * std::cos (2.0f * pi * static_cast<float> (i)
                                     / static_cast<float> (fftSize));
 
-    gainWorker = std::thread (
-        [this] { deterministicGainWorkerLoop(); });
 }
 
-DistortionEngine::~DistortionEngine()
-{
-    {
-        const std::lock_guard lock (gainWorkerMutex);
-        gainWorkerShouldExit = true;
-        gainJobPending = false;
-    }
-    gainWorkerCondition.notify_one();
-    if (gainWorker.joinable())
-        gainWorker.join();
-}
+DistortionEngine::~DistortionEngine() = default;
 
 const std::array<juce::String, DistortionEngine::modeCount>& DistortionEngine::getModeNames()
 {
@@ -535,14 +573,20 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
             for (auto& state : states)
                 state.reset();
 
-        visualization.output[static_cast<size_t> (point)] =
-            processCascadeSample (
+        auto displayedOutput = processCascadeSample (
                 input,
                 modeContext,
                 stageGain,
                 stageDepth,
                 stages,
                 states);
+        // Match the canonical clip preview to the final 0 dBFS ceiling shown
+        // by the revised Hard Clip visualization. Vital's rational tanh can
+        // overshoot unity slightly for very large inputs, but the plug-in's
+        // zero-dB output path clamps that overshoot.
+        if (mode == Mode::morphSoftClip)
+            displayedOutput = clampBipolar (displayedOutput);
+        visualization.output[static_cast<size_t> (point)] = displayedOutput;
     }
 }
 
@@ -599,59 +643,13 @@ void DistortionEngine::primeAutoGain (const Parameters& parameters)
 {
     const auto signature = hashDeterministicGainParameters (parameters);
     deterministicGainLinear = parameters.autoGainMode > 0
-        ? calculateDeterministicGain (parameters, sampleRate)
+        ? lookupDeterministicGain (parameters, sampleRate)
         : 1.0f;
+    autoGainLinear = deterministicGainLinear;
     lastGainSignature = signature;
     lastSmartGainSignature = hashSmartGainParameters (parameters);
-    appliedGainSignature = signature;
     lastAutoGainMode = parameters.autoGainMode;
-    gainCalibrationPending = false;
     resetSmartAutoGain();
-}
-
-void DistortionEngine::requestDeterministicGain (
-    const Parameters& parameters,
-    double rate,
-    std::uint64_t signature) noexcept
-{
-    {
-        const std::lock_guard lock (gainWorkerMutex);
-        queuedGainParameters = parameters;
-        queuedGainSampleRate = rate;
-        queuedGainSignature = signature;
-        gainJobPending = true;
-    }
-    gainWorkerCondition.notify_one();
-}
-
-void DistortionEngine::deterministicGainWorkerLoop()
-{
-    for (;;)
-    {
-        Parameters parameters;
-        double rate = 44100.0;
-        std::uint64_t signature = 0;
-        {
-            std::unique_lock lock (gainWorkerMutex);
-            gainWorkerCondition.wait (
-                lock,
-                [this]
-                {
-                    return gainJobPending || gainWorkerShouldExit;
-                });
-            if (gainWorkerShouldExit)
-                return;
-
-            parameters = queuedGainParameters;
-            rate = queuedGainSampleRate;
-            signature = queuedGainSignature;
-            gainJobPending = false;
-        }
-
-        const auto gain = calculateDeterministicGain (parameters, rate);
-        completedDeterministicGain.store (gain, std::memory_order_relaxed);
-        completedGainSignature.store (signature, std::memory_order_release);
-    }
 }
 
 void DistortionEngine::reset()
@@ -677,14 +675,13 @@ void DistortionEngine::reset()
 
     dcPreviousInput.fill (0.0f);
     dcPreviousOutput.fill (0.0f);
+    dcMixState.fill (0.0f);
     dryDelayPositions.fill (0);
     wetDelayPositions.fill (0);
     autoGainLinear = 1.0f;
     deterministicGainLinear = 1.0f;
     lastGainSignature = 0;
     lastSmartGainSignature = 0;
-    appliedGainSignature = 0;
-    gainCalibrationPending = false;
     resetSmartAutoGain();
     lastMode = -1;
     lastAutoGainMode = -1;
@@ -871,45 +868,12 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     const auto smartGainSignature = hashSmartGainParameters (parameters);
     const auto autoGainWasEnabled = lastAutoGainMode > 0;
     const auto autoGainIsEnabled = parameters.autoGainMode > 0;
-    const auto completedSignature =
-        completedGainSignature.load (std::memory_order_acquire);
-    const auto completedGainAvailable =
-        completedSignature == gainSignature;
     const auto requiresGainCalibration =
         gainSignature != lastGainSignature
         || (autoGainIsEnabled && ! autoGainWasEnabled);
     if (requiresGainCalibration)
     {
         lastGainSignature = gainSignature;
-        if (! autoGainIsEnabled)
-        {
-            deterministicGainLinear = 1.0f;
-            appliedGainSignature = 0;
-            gainCalibrationPending = false;
-        }
-        else if (completedGainAvailable)
-        {
-            deterministicGainLinear = completedDeterministicGain.load (
-                std::memory_order_relaxed);
-            appliedGainSignature = gainSignature;
-            gainCalibrationPending = false;
-        }
-        else
-        {
-            requestDeterministicGain (
-                parameters, sampleRate, gainSignature);
-            gainCalibrationPending = true;
-        }
-        resetSmartAutoGain();
-    }
-    else if (gainCalibrationPending
-             && completedGainAvailable
-             && appliedGainSignature != gainSignature)
-    {
-        deterministicGainLinear = completedDeterministicGain.load (
-            std::memory_order_relaxed);
-        appliedGainSignature = gainSignature;
-        gainCalibrationPending = false;
         resetSmartAutoGain();
     }
     else if (parameters.autoGainMode == 2 && lastAutoGainMode != 2)
@@ -946,6 +910,9 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     smoothed.tone = smoothedTone;
     smoothed.mix = smoothedMix;
     smoothed.outputDb = smoothedOutputDb;
+    deterministicGainLinear = parameters.autoGainMode > 0
+        ? lookupDeterministicGain (smoothed, sampleRate)
+        : 1.0f;
 
     updateToneFilters (smoothed.tone);
     processTonePre (buffer);
@@ -990,8 +957,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     double wetPeak = 0.0;
     const auto smartMeasurementActive =
         parameters.autoGainMode == 2
-        && ! smartGainLocked
-        && ! gainCalibrationPending;
+        && ! smartGainLocked;
 
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -1138,8 +1104,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
             ? deterministicGainLinear
             : smartGainLinear);
     const auto gainAtBlockStart = autoGainLinear;
-    const auto smoothingSeconds =
-        targetAutoGain < autoGainLinear ? 0.035 : 0.12;
+    constexpr auto smoothingSeconds = 0.010;
     const auto coefficient = static_cast<float> (std::exp (
         -static_cast<double> (samples)
         / juce::jmax (1.0, sampleRate * smoothingSeconds)));
@@ -1259,7 +1224,12 @@ float DistortionEngine::processCascadeSample (
         const auto shaped = processModeSample (
             algorithmDrive
                 ? dry
-                : dry * stageGain,
+                : dry
+                    * (mode == Mode::signSquare
+                        ? 1.0f
+                        : (mode == Mode::deltaCrusher
+                            ? context.coefficients[1]
+                            : stageGain)),
             context,
             state);
         value = algorithmDrive
@@ -1289,13 +1259,15 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
     const auto dcCoefficient = static_cast<float> (std::exp (
         -2.0 * juce::MathConstants<double>::pi * 5.0
         / juce::jmax (1.0, processingSampleRate)));
+    const auto dcMixCoefficient = smoothingCoefficient (
+        processingSampleRate, 0.005);
     for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
     {
         const auto channelAsymmetry =
             parameters.asymmetryStereo && channel == 1
                 ? -parameters.asymmetry
                 : parameters.asymmetry;
-        const auto dcBlockingEnabled = needsDcBlocking (
+        const auto dcMix = dcBlockingAmount (
             mode, parameters.character, channelAsymmetry);
         const auto modeContext = makeModeContext (
             mode,
@@ -1316,23 +1288,16 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
                 stages,
                 stageStates[channel]);
 
-            auto dcBlocked = value;
-            if (dcBlockingEnabled)
-            {
-                const auto previousInput = dcPreviousInput[channel];
-                const auto previousOutput = dcPreviousOutput[channel];
-                dcBlocked =
-                    value - previousInput + dcCoefficient * previousOutput;
-                dcPreviousInput[channel] = value;
-                dcPreviousOutput[channel] = dcBlocked;
-            }
-            else
-            {
-                // Track the current input so enabling a genuinely necessary
-                // blocker later does not begin from stale state.
-                dcPreviousInput[channel] = value;
-                dcPreviousOutput[channel] = 0.0f;
-            }
+            const auto previousInput = dcPreviousInput[channel];
+            const auto previousOutput = dcPreviousOutput[channel];
+            const auto filtered =
+                value - previousInput + dcCoefficient * previousOutput;
+            dcPreviousInput[channel] = value;
+            dcPreviousOutput[channel] = filtered;
+            dcMixState[channel] =
+                dcMix + dcMixCoefficient * (dcMixState[channel] - dcMix);
+            const auto dcBlocked = lerp (
+                value, filtered, dcMixState[channel]);
             const auto safeOutput = mode == Mode::schmittHysteresis
                 ? juce::jlimit (-0.98f, 0.98f, dcBlocked)
                 : dcBlocked;
@@ -1375,7 +1340,9 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
             break;
 
         case Mode::signSquare:
-            p[0] = lerp (0.35f, 26.0f, std::pow (drive, 1.35f)) * c;
+            // Threshold and edge hardness are deliberately independent:
+            // Character moves the switching point while Drive sharpens it.
+            p[0] = 0.78f * c;
             p[1] = lerp (0.85f, 32.0f, drive);
             break;
 
@@ -1390,9 +1357,10 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
             break;
 
         case Mode::halfWaveRectifier:
-            p[0] = lerp (0.48f, 0.001f, c01);
-            p[1] = p[0] * p[0];
-            p[2] = c01 * c01 * (3.0f - 2.0f * c01);
+            p[0] = lerp (0.42f, 0.0f, smoothStep01 (c01));
+            p[1] = lerp (0.10f, 0.002f, c01);
+            p[2] = 0.55f * std::pow (1.0f - c01, 1.6f);
+            p[3] = smoothStep01 (c01);
             break;
 
         case Mode::topologyFold:
@@ -1466,6 +1434,7 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
 
         case Mode::deltaCrusher:
             p[0] = std::pow (10.0f, lerp (-6.0f, 0.0f, c01));
+            p[1] = lerp (1.0f, 4.0f, smoothStep01 (drive));
             break;
 
         case Mode::triodeStage:
@@ -1478,8 +1447,10 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
             break;
 
         case Mode::transistorFet:
-            p[0] = -0.12f + 0.48f * c;
-            p[1] = p[0] * p[0] * 0.25f;
+            p[0] = -0.12f + 1.18f * c;
+            p[1] = juce::jmax (0.0f, p[0]);
+            p[1] *= p[1];
+            p[2] = 1.0f / (1.0f + 0.55f * std::abs (c));
             break;
 
         case Mode::tapeHysteresis:
@@ -1488,11 +1459,12 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
 
         case Mode::transformerCore:
         {
-            const auto curve = c01 * c01;
+            const auto curve = smoothStep01 (c01);
             p[0] = smoothingCoefficient (
-                processingSampleRate, lerp (0.00045f, 0.080f, curve));
-            p[1] = lerp (0.04f, 1.45f, curve);
-            p[2] = lerp (0.12f, 6.5f, std::pow (c01, 1.55f));
+                processingSampleRate, lerp (0.0015f, 0.090f, curve));
+            p[1] = lerp (0.04f, 0.82f, curve);
+            p[2] = lerp (1.05f, 2.65f, curve);
+            p[3] = 1.0f / p[2];
             break;
         }
 
@@ -1616,12 +1588,17 @@ float DistortionEngine::processModeSample (float input,
 
         case Mode::halfWaveRectifier:
         {
+            const auto relative = x - p[0];
             const auto junction = 0.5f
-                * (x + std::sqrt (x * x + p[1]) - p[0]);
-            const auto leaky = lerp (
-                0.38f * x + 0.62f * junction,
-                junction,
-                c01);
+                * (relative
+                   + std::sqrt (relative * relative + p[1] * p[1]));
+            const auto zeroRelative = -p[0];
+            const auto zeroOffset = 0.5f
+                * (zeroRelative
+                   + std::sqrt (
+                       zeroRelative * zeroRelative + p[1] * p[1]));
+            const auto forward = juce::jmax (0.0f, junction - zeroOffset);
+            const auto leaky = forward + p[2] * juce::jmin (0.0f, x);
             const auto primitive = x > 0.0f ? 0.5f * x * x : 0.0f;
             auto precise = juce::jmax (0.0f, x);
             if (state.counter > 0
@@ -1631,7 +1608,7 @@ float DistortionEngine::processModeSample (float input,
             state.previousInput = x;
             state.previousOutput = primitive;
             state.counter = 1;
-            return lerp (leaky, precise, p[2]);
+            return lerp (leaky, precise, p[3]);
         }
 
         case Mode::topologyFold:
@@ -1769,11 +1746,13 @@ float DistortionEngine::processModeSample (float input,
 
         case Mode::deltaCrusher:
         {
-            const auto delta = x - state.previousInput;
-            const auto quantisedDelta = std::round (delta / p[0]) * p[0];
-            state.memory = clampBipolar (state.memory + quantisedDelta);
+            const auto predictionError = x - state.memory;
+            const auto quantisedError =
+                std::round (predictionError / p[0]) * p[0];
+            state.memory = juce::jlimit (
+                -p[1], p[1], state.memory + quantisedError);
             state.previousInput = x;
-            return state.memory;
+            return state.memory / p[1];
         }
 
         case Mode::diodeClipper:
@@ -1799,7 +1778,7 @@ float DistortionEngine::processModeSample (float input,
             const auto gate = juce::jmax (0.0f, x + p[0]);
             const auto squareLaw = gate * gate;
             const auto centred = squareLaw - p[1];
-            return std::tanh (2.2f * centred);
+            return std::tanh (2.2f * p[2] * centred);
         }
 
         case Mode::tapeHysteresis:
@@ -1813,8 +1792,9 @@ float DistortionEngine::processModeSample (float input,
         case Mode::transformerCore:
         {
             state.memory = x + p[0] * (state.memory - x);
-            const auto coreDrive = x + p[1] * state.memory;
-            return std::tanh (p[2] * coreDrive);
+            const auto fluxCoupled =
+                (x + p[1] * state.memory) / (1.0f + p[1]);
+            return std::tanh (p[2] * fluxCoupled) * p[3];
         }
 
         case Mode::slewLimiter:
@@ -1899,7 +1879,27 @@ float DistortionEngine::processModeSample (float input,
                 fraction);
             state.phaseWritePosition =
                 (write + 1) % delaySize;
-            return delayed;
+
+            constexpr auto silenceThreshold = 3.16227766e-5f; // -90 dBFS
+            const auto silenceHold = juce::jmax (
+                8, juce::roundToInt (0.001 * processingSampleRate));
+            if (std::abs (x) <= silenceThreshold)
+                ++state.silenceSamples;
+            else
+            {
+                state.silenceSamples = 0;
+                state.tailGain = 1.0f;
+            }
+
+            if (state.silenceSamples >= silenceHold)
+            {
+                const auto releaseStep = static_cast<float> (
+                    1.0 / juce::jmax (1.0, 0.006 * processingSampleRate));
+                state.tailGain = juce::jmax (
+                    0.0f, state.tailGain - releaseStep);
+            }
+
+            return delayed * state.tailGain;
         }
 
         case Mode::spectralClip:
@@ -2128,7 +2128,115 @@ bool DistortionEngine::usesOversampling (Mode mode) noexcept
         && mode != Mode::spectralClip;
 }
 
-float DistortionEngine::calculateDeterministicGain (
+float DistortionEngine::lookupDeterministicGain (
+    const Parameters& parameters,
+    double displaySampleRate) noexcept
+{
+    const auto selectedMode =
+        juce::jlimit (0, modeCount - 1, parameters.mode);
+    if (selectedMode == static_cast<int> (Mode::spectralClip))
+    {
+        using namespace spectral_auto_gain_table;
+        const auto stage = static_cast<size_t> (
+            juce::jlimit (1, maximumStages, parameters.stages) - 1);
+        const auto drivePosition = tablePosition (
+            drives, juce::jlimit (0.0f, 36.0f, parameters.driveDb));
+        const auto characterPosition = tablePosition (
+            characters, juce::jlimit (0.0f, 1.0f, parameters.character));
+        const auto valueAt = [&] (size_t character, size_t drive)
+        {
+            return gains[
+                (stage * characters.size() + character) * drives.size()
+                    + drive];
+        };
+        const auto interpolateAtCharacter = [&] (size_t character)
+        {
+            return lerp (
+                valueAt (character, drivePosition.lower),
+                valueAt (character, drivePosition.upper),
+                drivePosition.fraction);
+        };
+        return lerp (
+            interpolateAtCharacter (characterPosition.lower),
+            interpolateAtCharacter (characterPosition.upper),
+            characterPosition.fraction);
+    }
+
+    using namespace auto_gain_table;
+
+    constexpr auto rateCount = sampleRates.size();
+    constexpr auto stageCount = static_cast<size_t> (maximumStages);
+    constexpr auto asymmetryCount = asymmetries.size();
+    constexpr auto characterCount = characters.size();
+    constexpr auto driveCount = drives.size();
+
+    const auto mode = static_cast<size_t> (
+        selectedMode);
+    const auto stage = static_cast<size_t> (
+        juce::jlimit (1, maximumStages, parameters.stages) - 1);
+    const auto ratePosition = tablePosition (
+        sampleRates, juce::jmax (1.0, displaySampleRate));
+    const auto drivePosition = tablePosition (
+        drives, juce::jlimit (0.0f, 36.0f, parameters.driveDb));
+    const auto characterPosition = tablePosition (
+        characters, juce::jlimit (-1.0f, 1.0f, parameters.character));
+    const auto asymmetryPosition = tablePosition (
+        asymmetries, juce::jlimit (-1.0f, 1.0f, parameters.asymmetry));
+
+    const auto valueAt = [&] (size_t rate,
+                              size_t asymmetry,
+                              size_t character,
+                              size_t drive)
+    {
+        const auto index =
+            (((((mode * rateCount + rate) * stageCount + stage)
+                * asymmetryCount + asymmetry)
+               * characterCount + character)
+              * driveCount + drive);
+        return gains[index];
+    };
+
+    const auto interpolateAtRate = [&] (size_t rate)
+    {
+        const auto interpolateAtAsymmetry = [&] (size_t asymmetry)
+        {
+            const auto interpolateAtCharacter = [&] (size_t character)
+            {
+                return lerp (
+                    valueAt (
+                        rate,
+                        asymmetry,
+                        character,
+                        drivePosition.lower),
+                    valueAt (
+                        rate,
+                        asymmetry,
+                        character,
+                        drivePosition.upper),
+                    drivePosition.fraction);
+            };
+            return lerp (
+                interpolateAtCharacter (characterPosition.lower),
+                interpolateAtCharacter (characterPosition.upper),
+                characterPosition.fraction);
+        };
+        return lerp (
+            interpolateAtAsymmetry (asymmetryPosition.lower),
+            interpolateAtAsymmetry (asymmetryPosition.upper),
+            asymmetryPosition.fraction);
+    };
+
+    const auto gain = lerp (
+        interpolateAtRate (ratePosition.lower),
+        interpolateAtRate (ratePosition.upper),
+        ratePosition.fraction);
+    return juce::jlimit (
+        juce::Decibels::decibelsToGain (-72.0f),
+        juce::Decibels::decibelsToGain (48.0f),
+        std::isfinite (gain) ? gain : 1.0f);
+}
+
+float DistortionEngine::calculateReferenceAutoGain (
     const Parameters& parameters,
     double displaySampleRate)
 {
@@ -2234,7 +2342,7 @@ float DistortionEngine::calculateDeterministicGain (
                 parameters.asymmetryStereo && channel == 1
                     ? -parameters.asymmetry
                     : parameters.asymmetry;
-            const auto dcBlockingEnabled = needsDcBlocking (
+            const auto dcMix = dcBlockingAmount (
                 mode, parameters.character, channelAsymmetry);
             const auto modeContext = makeModeContext (
                 mode,
@@ -2250,17 +2358,14 @@ float DistortionEngine::calculateDeterministicGain (
                 stageDepth,
                 stages,
                 calibrationStates[static_cast<size_t> (channel)]);
-            auto blocked = value;
-            if (dcBlockingEnabled)
-            {
-                blocked =
-                    value
-                    - dcInput[static_cast<size_t> (channel)]
-                    + dcCoefficient
-                        * dcOutput[static_cast<size_t> (channel)];
-                dcInput[static_cast<size_t> (channel)] = value;
-                dcOutput[static_cast<size_t> (channel)] = blocked;
-            }
+            const auto index = static_cast<size_t> (channel);
+            const auto filtered =
+                value
+                - dcInput[index]
+                + dcCoefficient * dcOutput[index];
+            dcInput[index] = value;
+            dcOutput[index] = filtered;
+            auto blocked = lerp (value, filtered, dcMix);
             if (mode == Mode::schmittHysteresis)
                 blocked = juce::jlimit (-0.98f, 0.98f, blocked);
 

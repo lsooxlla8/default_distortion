@@ -274,7 +274,10 @@ void GeometricLookAndFeel::drawRotarySlider (
         6.0f * scale, side * 0.08f);
     const auto markerX = inner.getX()
         + progress * juce::jmax (0.0f, inner.getWidth() - markerSize);
-    graphics.setColour (background);
+    graphics.setColour (
+        inverted
+            ? background
+            : background.interpolatedWith (foreground, 0.72f));
     graphics.fillRect (
         markerX,
         inner.getY() + 3.0f * scale,

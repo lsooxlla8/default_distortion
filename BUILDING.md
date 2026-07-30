@@ -65,6 +65,32 @@ ctest --test-dir build -C Release --output-on-failure
 WebKit and Curl are deliberately disabled because the plug-in does not use a
 web browser or networking.
 
+## Auto Gain reference tables
+
+Ordinary Auto Gain uses generated lookup tables so parameter changes do not
+wait for a background calibration pass. **Every change to a distortion
+algorithm, its Drive/Character/Asymmetry mapping, stage behaviour, DC
+filtering, or reference calibration must regenerate and commit both tables.**
+
+Build the test generator first, then regenerate the main and dense Spectral
+Clip tables:
+
+```sh
+cmake --build build --config Release --target DefaultDistortionTests --parallel
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-auto-gain-table > Source/AutoGainTable.h
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-spectral-auto-gain-table > Source/SpectralAutoGainTable.h
+cmake --build build --config Release --target DefaultDistortionTests --parallel
+ctest --test-dir build -C Release --output-on-failure
+```
+
+`Tests/DspTests.cpp` is the authoritative generator. The main table covers all
+30 modes at four sample rates, all eight stage counts, and a grid across
+Drive, Character, and Asymmetry. Spectral Clip also has a denser dedicated
+table because its makeup curve changes more sharply between the main grid
+points.
+
 ## GitHub Actions and releases
 
 `.github/workflows/build-and-release.yml` builds and tests:
