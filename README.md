@@ -1,6 +1,6 @@
 # default_distortion
 
-![default_distortion plug-in interface](docs/default_distortion.png)
+![default_distortion plug-in interface](docs/default_distortion-ui.png)
 
 ~~I~~ ChatGPT made `default_distortion` because one day I had nothing to do
 and wanted a free, convenient everyday saturator. I used as much AI as
