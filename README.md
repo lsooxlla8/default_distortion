@@ -59,39 +59,11 @@ under their GPL-compatible licences.
 
 ## Build
 
-The first configure downloads JUCE 8.0.15 with CMake FetchContent.
-
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 ctest --test-dir build --output-on-failure
 ```
-
-Build products are placed under:
-
-```text
-build/DefaultDistortion_artefacts/Release/
-```
-
-On macOS, the relevant products are normally:
-
-```text
-AU/default_distortion.component
-VST3/default_distortion.vst3
-Standalone/default_distortion.app
-```
-
-To install manually:
-
-```text
-AU   → ~/Library/Audio/Plug-Ins/Components/
-VST3 → ~/Library/Audio/Plug-Ins/VST3/
-App  → ~/Applications/
-```
-
-macOS builds receive a local ad-hoc signature automatically. Public
-distribution still requires the developer's Apple Developer ID signature and
-notarization.
 
 ## Licence
 
