@@ -549,8 +549,6 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
         || mode == Mode::tapeHysteresis
         || mode == Mode::transformerCore
         || mode == Mode::slewLimiter
-        || (mode == Mode::schmittHysteresis
-            && parameters.schmittSlew > 1.0e-6f)
         || mode == Mode::dynamicSag
         || mode == Mode::feedbackSaturator
         || mode == Mode::resonantFeedbackClip
@@ -639,7 +637,9 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
     const auto modeContext = makeModeContext (
         mode,
         parameters.character,
-        secondaryParameterForMode (mode, parameters),
+        mode == Mode::schmittHysteresis
+            ? 0.0f
+            : secondaryParameterForMode (mode, parameters),
         parameters.asymmetry,
         driveNormalised,
         simulationSampleRate,

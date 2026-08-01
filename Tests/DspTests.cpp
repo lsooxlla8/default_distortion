@@ -2398,6 +2398,25 @@ void testSecondaryToneControlsAndSineRelease (TestContext& context)
         [] (dd::Parameters& p) { p.schmittSlew = 1.0f; },
         "Schmitt Slew");
 
+    dd::Parameters schmittViewParameters;
+    schmittViewParameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::schmittHysteresis);
+    schmittViewParameters.driveDb = 24.0f;
+    schmittViewParameters.character = 0.65f;
+    dd::DistortionEngine::Visualization schmittWithoutSlew;
+    dd::DistortionEngine::makeVisualization (
+        schmittViewParameters, sampleRate, schmittWithoutSlew);
+    schmittViewParameters.schmittSlew = 1.0f;
+    dd::DistortionEngine::Visualization schmittWithSlew;
+    dd::DistortionEngine::makeVisualization (
+        schmittViewParameters, sampleRate, schmittWithSlew);
+    context.expect (
+        ! schmittWithoutSlew.timeDomain
+            && ! schmittWithSlew.timeDomain
+            && ! schmittWithoutSlew.spectralDomain
+            && ! schmittWithSlew.spectralDomain,
+        "Schmitt Hysteresis visualization changes domain when Slew moves");
+
     dd::DistortionEngine engine;
     engine.prepare (sampleRate, blockSize, 1);
     dd::Parameters sine;

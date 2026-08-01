@@ -516,7 +516,7 @@ void VerticalTextButton::paintButton (
 {
     const auto active = getToggleState() || isDown;
     const auto scale = scaleOf (*this);
-    const auto connectorWidth = juce::jmax (2.0f, 4.0f * scale);
+    const auto connectorWidth = juce::jmax (4.0f, 11.0f * scale);
     auto body = getLocalBounds().toFloat();
     body.removeFromLeft (connectorWidth);
     const auto foreground = foregroundOf (*this);
@@ -576,7 +576,7 @@ VerticalTextSlider::VerticalTextSlider (
 void VerticalTextSlider::paint (juce::Graphics& graphics)
 {
     const auto scale = scaleOf (*this);
-    const auto connectorWidth = juce::jmax (2.0f, 4.0f * scale);
+    const auto connectorWidth = juce::jmax (4.0f, 11.0f * scale);
     auto bounds = getLocalBounds().toFloat();
     bounds.removeFromLeft (connectorWidth);
     const auto foreground = foregroundOf (*this);
@@ -731,6 +731,17 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
         || differs (parameters.driveDb, visualizedParameters.driveDb)
         || differs (parameters.character, visualizedParameters.character)
         || differs (parameters.wave, visualizedParameters.wave)
+        || differs (parameters.tapeBias, visualizedParameters.tapeBias)
+        || differs (
+            parameters.transformerAirGap,
+            visualizedParameters.transformerAirGap)
+        || differs (
+            parameters.downsampleJitter,
+            visualizedParameters.downsampleJitter)
+        || differs (
+            parameters.bitCrusherDither,
+            visualizedParameters.bitCrusherDither)
+        || differs (parameters.schmittSlew, visualizedParameters.schmittSlew)
         || differs (parameters.asymmetry, visualizedParameters.asymmetry)
         || parameters.asymmetryStereo
             != visualizedParameters.asymmetryStereo
@@ -855,6 +866,15 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
         addAndMakeVisible (*control);
     }
     addAndMakeVisible (responseDisplay);
+
+    // ParameterControl paints an opaque background. Keep the linked vertical
+    // controls above their neighbouring knobs so neither the connector nor
+    // the left frame edge can be covered at larger editor scales.
+    asymStereoButton.toFront (false);
+    for (auto* slider : {
+             &waveSlider, &tapeBiasSlider, &airGapSlider,
+             &jitterSlider, &ditherSlider, &slewSlider })
+        slider->toFront (false);
 
     drive.slider.setRange (0.0, 36.0, 0.01);
     asym.slider.setRange (-1.0, 1.0, 0.001);
@@ -1292,10 +1312,10 @@ void DefaultDistortionAudioProcessorEditor::resized()
     for (auto* slider : {
              &waveSlider, &tapeBiasSlider, &airGapSlider,
              &jitterSlider, &ditherSlider, &slewSlider })
-        slider->setBounds (scaled (115, 107, 28, 69));
+        slider->setBounds (scaled (108, 107, 35, 69));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
     asym.setBounds (scaled (285, 78, 100, controlHeight));
-    asymStereoButton.setBounds (scaled (373, 107, 29, 69));
+    asymStereoButton.setBounds (scaled (366, 107, 36, 69));
     tone.setBounds (scaled (414, 78, 100, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
     output.setBounds (scaled (143, 212, controlWidth, controlHeight));
