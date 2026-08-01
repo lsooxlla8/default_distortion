@@ -96,6 +96,18 @@ DefaultDistortionAudioProcessor::createLayout()
         bipolarAttributes));
 
     layout.add (std::make_unique<Float> (
+        juce::ParameterID { ParamIDs::wave, 1 },
+        "Wave",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
+        0.0f,
+        juce::AudioParameterFloatAttributes {}
+            .withLabel ("%")
+            .withStringFromValueFunction ([] (float value, int)
+            {
+                return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+            })));
+
+    layout.add (std::make_unique<Float> (
         juce::ParameterID { ParamIDs::asym, 1 },
         "Asymmetry",
         juce::NormalisableRange<float> { -1.0f, 1.0f, 0.001f },
@@ -219,6 +231,7 @@ Parameters DefaultDistortionAudioProcessor::getCurrentParameters() const noexcep
         parameters.getRawParameterValue (ParamIDs::mode)->load());
     result.driveDb = parameters.getRawParameterValue (ParamIDs::drive)->load();
     result.character = parameters.getRawParameterValue (ParamIDs::character)->load();
+    result.wave = parameters.getRawParameterValue (ParamIDs::wave)->load();
     result.asymmetry = parameters.getRawParameterValue (ParamIDs::asym)->load();
     result.asymmetryStereo =
         parameters.getRawParameterValue (ParamIDs::asymStereo)->load() >= 0.5f;

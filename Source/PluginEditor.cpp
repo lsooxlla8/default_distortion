@@ -543,6 +543,58 @@ void VerticalTextButton::paintButton (
         1);
 }
 
+VerticalTextSlider::VerticalTextSlider()
+{
+    setName ("WAVE");
+    setTitle ("WAVE");
+    setSliderStyle (juce::Slider::LinearVertical);
+    setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    setRange (0.0, 1.0, 0.001);
+    setDoubleClickReturnValue (true, 0.0);
+    setMouseDragSensitivity (140);
+}
+
+void VerticalTextSlider::paint (juce::Graphics& graphics)
+{
+    const auto scale = scaleOf (*this);
+    auto bounds = getLocalBounds().toFloat().reduced (scale);
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    graphics.setColour (background);
+    graphics.fillRect (bounds);
+    graphics.setColour (foreground);
+    graphics.drawRect (bounds, 2.0f * scale);
+
+    const auto progress = static_cast<float> (
+        getNormalisableRange().convertTo0to1 (getValue()));
+    auto track = bounds.reduced (4.0f * scale);
+    const auto markerY = track.getBottom()
+        - progress * track.getHeight();
+    graphics.setColour (mutedOf (*this));
+    graphics.fillRect (
+        track.getX(), markerY - scale, track.getWidth(), 2.0f * scale);
+
+    graphics.setColour (foreground);
+    graphics.setFont (monoFont (10.0f * scale, true));
+    juce::Graphics::ScopedSaveState saved (graphics);
+    graphics.addTransform (
+        juce::AffineTransform::rotation (
+            -juce::MathConstants<float>::halfPi,
+            static_cast<float> (getWidth()) * 0.5f,
+            static_cast<float> (getHeight()) * 0.5f));
+    const auto rotatedBounds = juce::Rectangle<float> (
+        static_cast<float> (getWidth() - getHeight()) * 0.5f,
+        static_cast<float> (getHeight() - getWidth()) * 0.5f,
+        static_cast<float> (getHeight()),
+        static_cast<float> (getWidth()));
+    graphics.drawFittedText (
+        "W A V E",
+        rotatedBounds.reduced (
+            5.0f * scale, 2.0f * scale).toNearestInt(),
+        juce::Justification::centred,
+        1);
+}
+
 void SmartGainButton::setLoadingState (float progress, bool isLoading)
 {
     loadingProgress = juce::jlimit (0.0f, 1.0f, progress);
@@ -641,6 +693,7 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
         || parameters.mode != visualizedParameters.mode
         || differs (parameters.driveDb, visualizedParameters.driveDb)
         || differs (parameters.character, visualizedParameters.character)
+        || differs (parameters.wave, visualizedParameters.wave)
         || differs (parameters.asymmetry, visualizedParameters.asymmetry)
         || parameters.asymmetryStereo
             != visualizedParameters.asymmetryStereo
@@ -752,6 +805,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     autoGainButton.onClick = [this] { cycleAutoGain(); };
     addAndMakeVisible (autoGainButton);
     addAndMakeVisible (asymStereoButton);
+    addAndMakeVisible (waveSlider);
 
     for (auto* control : {
              &drive, &character, &asym, &tone,
@@ -812,6 +866,8 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     auto& state = ownerProcessor.parameters;
     driveAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::drive, drive.slider);
+    waveAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::wave, waveSlider);
     asymAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::asym, asym.slider);
     asymStereoAttachment = std::make_unique<ButtonAttachment> (
@@ -1040,6 +1096,9 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
     };
     drive.slider.updateText();
     character.slider.updateText();
+    waveSlider.setVisible (
+        displayedMode == static_cast<int> (
+            DistortionEngine::Mode::sineErosion));
     drive.repaint();
     character.repaint();
 }
@@ -1137,6 +1196,9 @@ void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.setColour (foreground);
     graphics.fillRect (rect (258, 0, 26, 24));
     graphics.fillRect (rect (258, 40, 26, 24));
+    graphics.fillRect (rect (374, 140, 4, 3));
+    if (waveSlider.isVisible())
+        graphics.fillRect (rect (116, 140, 4, 3));
 }
 
 void DefaultDistortionAudioProcessorEditor::resized()
@@ -1172,11 +1234,12 @@ void DefaultDistortionAudioProcessorEditor::resized()
 
     constexpr int controlWidth = 126;
     constexpr int controlHeight = 128;
-    drive.setBounds (scaled (14, 78, controlWidth, controlHeight));
+    drive.setBounds (scaled (27, 78, 100, controlHeight));
+    waveSlider.setBounds (scaled (118, 107, 24, 69));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
     asym.setBounds (scaled (285, 78, 100, controlHeight));
-    asymStereoButton.setBounds (scaled (387, 107, 12, 69));
-    tone.setBounds (scaled (401, 78, controlWidth, controlHeight));
+    asymStereoButton.setBounds (scaled (376, 107, 24, 69));
+    tone.setBounds (scaled (414, 78, 100, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
     output.setBounds (scaled (143, 212, controlWidth, controlHeight));
     quality.setBounds (scaled (272, 212, controlWidth, controlHeight));

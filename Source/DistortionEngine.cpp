@@ -1,5 +1,6 @@
 #include "DistortionEngine.h"
 #include "AutoGainTable.h"
+#include "SineErosionAutoGainTable.h"
 #include "SpectralAutoGainTable.h"
 
 #include <algorithm>
@@ -76,6 +77,24 @@ float driveDepth (float driveDb) noexcept
 {
     const auto normalised = juce::jlimit (0.0f, 1.0f, driveDb / 36.0f);
     return normalised * normalised * (3.0f - 2.0f * normalised);
+}
+
+float sineErosionFrequency (float character) noexcept
+{
+    const auto amount = unipolarCharacter (character);
+    if (amount <= 0.5f)
+    {
+        const auto lower = 2.0f * amount;
+        return 1000.0f * lower * lower;
+    }
+    return 1000.0f * std::pow (10.0f, 2.0f * amount - 1.0f);
+}
+
+float sineErosionDepth (float driveNormalised) noexcept
+{
+    return std::pow (
+        juce::jlimit (0.0f, 1.0f, driveNormalised),
+        2.5849625f);
 }
 
 float smoothTowards (float current, float target, double rate, double timeSeconds) noexcept
@@ -160,6 +179,9 @@ std::uint64_t hashDeterministicGainParameters (
     add (static_cast<std::uint32_t> (parameters.mode));
     add (std::bit_cast<std::uint32_t> (parameters.driveDb));
     add (std::bit_cast<std::uint32_t> (parameters.character));
+    if (parameters.mode
+            == static_cast<int> (DistortionEngine::Mode::sineErosion))
+        add (std::bit_cast<std::uint32_t> (parameters.wave));
     add (std::bit_cast<std::uint32_t> (parameters.asymmetry));
     add (static_cast<std::uint32_t> (parameters.asymmetryStereo));
     add (static_cast<std::uint32_t> (parameters.stages));
@@ -360,12 +382,12 @@ const std::array<juce::String, DistortionEngine::modeCount>& DistortionEngine::g
 
 int DistortionEngine::getModeForDisplayPosition (int position) noexcept
 {
-    // Keep every released internal mode ID stable while presenting the newly
-    // substituted Sine Erosion algorithm at the end of the user-facing list.
+    // Keep every released internal mode ID stable while presenting Sine
+    // Erosion as number ten in the user-facing list.
     static constexpr std::array<int, modeCount> displayOrder {
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-        10, 11, 12, 13, 15, 16, 17, 18, 19, 20,
-        21, 22, 23, 24, 25, 26, 27, 28, 29, 14
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 14,
+        9, 10, 11, 12, 13, 15, 16, 17, 18, 19,
+        20, 21, 22, 23, 24, 25, 26, 27, 28, 29
     };
     return displayOrder[static_cast<size_t> (
         juce::jlimit (0, modeCount - 1, position))];
@@ -428,7 +450,7 @@ juce::String DistortionEngine::formatCharacterValue (int mode,
 
     if (selected == Mode::sineErosion)
     {
-        const auto frequency = 20000.0f * unipolar;
+        const auto frequency = sineErosionFrequency (rawValue);
         if (frequency >= 1000.0f)
             return juce::String (
                 frequency / 1000.0f,
@@ -590,6 +612,7 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
     const auto modeContext = makeModeContext (
         mode,
         parameters.character,
+        parameters.wave,
         parameters.asymmetry,
         driveNormalised,
         simulationSampleRate,
@@ -934,6 +957,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     Parameters blockStart = parameters;
     blockStart.driveDb = smoothedDriveDb;
     blockStart.character = smoothedCharacter;
+    blockStart.wave = smoothedWave;
     blockStart.asymmetry = smoothedAsymmetry;
     blockStart.tone = smoothedTone;
     blockStart.mix = smoothedMix;
@@ -942,6 +966,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
         smoothedDriveDb, parameters.driveDb, parameterUpdateRate, 0.015);
     smoothedCharacter = smoothTowards (
         smoothedCharacter, parameters.character, parameterUpdateRate, 0.015);
+    smoothedWave = smoothTowards (
+        smoothedWave, parameters.wave, parameterUpdateRate, 0.015);
     smoothedAsymmetry = smoothTowards (
         smoothedAsymmetry, parameters.asymmetry, parameterUpdateRate, 0.015);
     smoothedTone = smoothTowards (
@@ -954,6 +980,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     Parameters smoothed = parameters;
     smoothed.driveDb = smoothedDriveDb;
     smoothed.character = smoothedCharacter;
+    smoothed.wave = smoothedWave;
     smoothed.asymmetry = smoothedAsymmetry;
     smoothed.tone = smoothedTone;
     smoothed.mix = smoothedMix;
@@ -1341,6 +1368,10 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
                 startParameters.character,
                 endParameters.character,
                 ramp);
+            const auto wave = lerp (
+                startParameters.wave,
+                endParameters.wave,
+                ramp);
             const auto asymmetry = lerp (
                 startParameters.asymmetry,
                 endParameters.asymmetry,
@@ -1352,6 +1383,7 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
             const auto modeContext = makeModeContext (
                 mode,
                 character,
+                wave,
                 channelAsymmetry,
                 juce::jlimit (0.0f, 1.0f, driveDb / 36.0f),
                 processingSampleRate,
@@ -1390,6 +1422,7 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
 DistortionEngine::ModeContext DistortionEngine::makeModeContext (
     Mode mode,
     float character,
+    float wave,
     float asymmetry,
     float driveNormalised,
     double processingSampleRate,
@@ -1399,6 +1432,7 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
     context.mode = mode;
     context.character = juce::jlimit (-1.0f, 1.0f, character);
     context.character01 = unipolarCharacter (context.character);
+    context.wave = juce::jlimit (0.0f, 1.0f, wave);
     context.asymmetry = juce::jlimit (-1.0f, 1.0f, asymmetry);
     context.driveNormalised =
         juce::jlimit (0.0f, 1.0f, driveNormalised);
@@ -1441,11 +1475,18 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
 
         case Mode::sineErosion:
         {
-            const auto frequencyHz = 20000.0f * c01;
+            const auto frequencyHz = juce::jmin (
+                sineErosionFrequency (character),
+                static_cast<float> (
+                    0.45 * juce::jmax (1.0, processingSampleRate)));
             p[0] = 2.0f * pi * frequencyHz
                 / static_cast<float> (
                     juce::jmax (1.0, processingSampleRate));
-            p[1] = 50.0f * drive;
+            p[1] = 50.0f * sineErosionDepth (drive);
+            p[2] = static_cast<float> (std::tan (
+                juce::MathConstants<double>::pi * frequencyHz
+                / juce::jmax (1.0, processingSampleRate)));
+            p[3] = context.wave;
             break;
         }
 
@@ -1683,15 +1724,46 @@ float DistortionEngine::processModeSample (float input,
             if (delaySize < 2)
                 return x;
 
-            // A pure unipolar sinusoid. Starting at zero keeps Frequency=0
-            // exactly transparent instead of introducing a static delay.
-            const auto modulator = 0.5f - 0.5f * static_cast<float> (
+            const auto sine = -static_cast<float> (
                 std::cos (state.phase));
             state.phase += p[0];
             if (state.phase >= juce::MathConstants<double>::twoPi)
                 state.phase = std::fmod (
                     state.phase,
                     juce::MathConstants<double>::twoPi);
+
+            state.noiseState ^= state.noiseState << 13;
+            state.noiseState ^= state.noiseState >> 17;
+            state.noiseState ^= state.noiseState << 5;
+            const auto white = 2.0f * static_cast<float> (
+                static_cast<double> (state.noiseState)
+                / static_cast<double> (UINT32_MAX)) - 1.0f;
+            state.pinkA = 0.99765f * state.pinkA + 0.0990460f * white;
+            state.pinkB = 0.96300f * state.pinkB + 0.2965164f * white;
+            state.pinkC = 0.57000f * state.pinkC + 1.0526913f * white;
+            const auto pink = 0.11f * (
+                state.pinkA + state.pinkB + state.pinkC
+                + 0.1848f * white);
+
+            constexpr auto inverseQ = 1.0f;
+            const auto denominator = 1.0f
+                + p[2] * (p[2] + inverseQ);
+            const auto band = (
+                state.bandpassIc1
+                + p[2] * (pink - state.bandpassIc2))
+                / juce::jmax (1.0e-6f, denominator);
+            const auto low = state.bandpassIc2 + p[2] * band;
+            state.bandpassIc1 = 2.0f * band - state.bandpassIc1;
+            state.bandpassIc2 = 2.0f * low - state.bandpassIc2;
+            const auto filteredPink = std::tanh (3.5f * band);
+
+            // Both sources are bipolar before the shared unipolar conversion,
+            // so Wave morphs without changing the delay's average position.
+            // Frequency=0 stays exactly transparent for either source.
+            const auto source = lerp (sine, filteredPink, p[3]);
+            const auto modulator = p[0] <= 0.0f
+                ? 0.0f
+                : 0.5f + 0.5f * source;
 
             const auto delaySamples = juce::jlimit (
                 0.0f,
@@ -2271,6 +2343,76 @@ float DistortionEngine::lookupDeterministicGain (
 {
     const auto selectedMode =
         juce::jlimit (0, modeCount - 1, parameters.mode);
+    if (selectedMode == static_cast<int> (Mode::sineErosion))
+    {
+        using namespace sine_erosion_auto_gain_table;
+        const auto stage = static_cast<size_t> (
+            juce::jlimit (1, maximumStages, parameters.stages) - 1);
+        const auto ratePosition = tablePosition (
+            sampleRates, juce::jmax (1.0, displaySampleRate));
+        const auto asymmetryPosition = tablePosition (
+            asymmetries,
+            juce::jlimit (-1.0f, 1.0f, parameters.asymmetry));
+        const auto characterPosition = tablePosition (
+            characters,
+            juce::jlimit (0.0f, 1.0f, parameters.character));
+        const auto wavePosition = tablePosition (
+            waves, juce::jlimit (0.0f, 1.0f, parameters.wave));
+        const auto drivePosition = tablePosition (
+            drives, juce::jlimit (0.0f, 36.0f, parameters.driveDb));
+        const auto valueAt = [&] (size_t rate,
+                                  size_t asymmetry,
+                                  size_t character,
+                                  size_t wave,
+                                  size_t drive)
+        {
+            return gains[
+                (((((rate * maximumStages + stage)
+                     * asymmetries.size() + asymmetry)
+                    * characters.size() + character)
+                   * waves.size() + wave)
+                  * drives.size() + drive)];
+        };
+        const auto interpolateAtRate = [&] (size_t rate)
+        {
+            const auto interpolateAtAsymmetry = [&] (size_t asymmetry)
+            {
+                const auto interpolateAtCharacter = [&] (size_t character)
+                {
+                    const auto interpolateAtWave = [&] (size_t wave)
+                    {
+                        return lerp (
+                            valueAt (
+                                rate, asymmetry, character, wave,
+                                drivePosition.lower),
+                            valueAt (
+                                rate, asymmetry, character, wave,
+                                drivePosition.upper),
+                            drivePosition.fraction);
+                    };
+                    return lerp (
+                        interpolateAtWave (wavePosition.lower),
+                        interpolateAtWave (wavePosition.upper),
+                        wavePosition.fraction);
+                };
+                return lerp (
+                    interpolateAtCharacter (characterPosition.lower),
+                    interpolateAtCharacter (characterPosition.upper),
+                    characterPosition.fraction);
+            };
+            return lerp (
+                interpolateAtAsymmetry (asymmetryPosition.lower),
+                interpolateAtAsymmetry (asymmetryPosition.upper),
+                asymmetryPosition.fraction);
+        };
+        return juce::jlimit (
+            juce::Decibels::decibelsToGain (-72.0f),
+            juce::Decibels::decibelsToGain (48.0f),
+            lerp (
+                interpolateAtRate (ratePosition.lower),
+                interpolateAtRate (ratePosition.upper),
+                ratePosition.fraction));
+    }
     if (selectedMode == static_cast<int> (Mode::spectralClip))
     {
         using namespace spectral_auto_gain_table;
@@ -2499,6 +2641,7 @@ float DistortionEngine::calculateReferenceAutoGain (
             const auto modeContext = makeModeContext (
                 mode,
                 parameters.character,
+                parameters.wave,
                 channelAsymmetry,
                 driveNormalised,
                 displaySampleRate,

@@ -9,6 +9,7 @@ namespace ParamIDs
 inline constexpr auto mode = "mode";
 inline constexpr auto drive = "drive";
 inline constexpr auto character = "character";
+inline constexpr auto wave = "wave";
 inline constexpr auto asym = "asym";
 inline constexpr auto asymStereo = "asymStereo";
 inline constexpr auto tone = "tone";
@@ -24,6 +25,7 @@ struct Parameters
     int mode = 0;
     float driveDb = 0.0f;
     float character = 0.0f;
+    float wave = 0.0f;
     float asymmetry = 0.0f;
     bool asymmetryStereo = false;
     float tone = 0.0f;

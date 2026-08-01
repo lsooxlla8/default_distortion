@@ -35,27 +35,31 @@ under their GPL-compatible licences.
 7. Harmonic Morph
 8. Phase Distortion
 9. Spectral Clip
-10. Sign / Square
-11. Zero-Square
-12. Full-Wave Rectifier
-13. Soft Full-Wave
-14. Transformer Core
-15. Class-B Saturation
-16. Topology Fold
-17. Recursive Foldback
-18. Sine Fold
-19. Chebyshev Fold
-20. Modulo Wrap
-21. Downsample
-22. Bit Crusher
-23. Bit Rotation
-24. Delta Crusher
-25. Slew Limiter
-26. Schmitt Hysteresis
-27. Feedback Saturator
-28. Resonant Feedback Clip
-29. Dynamic Sag
-30. Sine Erosion
+10. Sine Erosion
+11. Sign / Square
+12. Zero-Square
+13. Full-Wave Rectifier
+14. Soft Full-Wave
+15. Transformer Core
+16. Class-B Saturation
+17. Topology Fold
+18. Recursive Foldback
+19. Sine Fold
+20. Chebyshev Fold
+21. Modulo Wrap
+22. Downsample
+23. Bit Crusher
+24. Bit Rotation
+25. Delta Crusher
+26. Slew Limiter
+27. Schmitt Hysteresis
+28. Feedback Saturator
+29. Resonant Feedback Clip
+30. Dynamic Sag
+
+Sine Erosion adds a secondary Wave control that morphs its delay modulator
+from a sine oscillator to band-pass-filtered pink noise. Character controls
+the oscillator or filter centre frequency on a 0 Hz to 10 kHz nonlinear scale.
 
 ## Build
 

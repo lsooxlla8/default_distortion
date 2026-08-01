@@ -77,8 +77,8 @@ is repeatable and independent of whatever audio happens to be playing.
 Drive/Character/Asymmetry mapping, stage behaviour, DC filtering, or reference
 calibration must regenerate and commit both tables.**
 
-Build the test generator first, then regenerate the main and dense Spectral
-Clip tables:
+Build the test generator first, then regenerate the main table, the dense
+Spectral Clip table, and the Sine Erosion table with its additional Wave axis:
 
 ```sh
 cmake --build build --config Release --target DefaultDistortionTests --parallel
@@ -86,15 +86,18 @@ cmake --build build --config Release --target DefaultDistortionTests --parallel
   --dump-auto-gain-table > Source/AutoGainTable.h
 ./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
   --dump-spectral-auto-gain-table > Source/SpectralAutoGainTable.h
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-sine-erosion-auto-gain-table > Source/SineErosionAutoGainTable.h
 cmake --build build --config Release --target DefaultDistortionTests --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
 `Tests/DspTests.cpp` is the authoritative generator. The main table covers all
-30 modes at four sample rates, all eight stage counts, and a grid across
-Drive, Character, and Asymmetry. Spectral Clip also has a denser dedicated
+30 internal mode IDs at four sample rates, all eight stage counts, and a grid
+across Drive, Character, and Asymmetry. Spectral Clip has a denser dedicated
 table because its makeup curve changes more sharply between the main grid
-points.
+points. Sine Erosion has a dedicated table so Wave can be calibrated without
+needlessly multiplying every other mode's table by that extra dimension.
 
 ## GitHub Actions and releases
 

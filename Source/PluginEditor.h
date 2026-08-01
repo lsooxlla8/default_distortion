@@ -117,6 +117,13 @@ public:
     void paintButton (juce::Graphics&, bool, bool) override;
 };
 
+class VerticalTextSlider final : public juce::Slider
+{
+public:
+    VerticalTextSlider();
+    void paint (juce::Graphics&) override;
+};
+
 class ResponseDisplay final : public juce::Component,
                               private juce::Timer
 {
@@ -172,6 +179,7 @@ private:
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
     VerticalTextButton asymStereoButton;
+    VerticalTextSlider waveSlider;
 
     ParameterControl drive { "DRIVE" };
     ParameterControl character { "CURVE" };
@@ -184,6 +192,7 @@ private:
     ResponseDisplay responseDisplay;
 
     std::unique_ptr<SliderAttachment> driveAttachment;
+    std::unique_ptr<SliderAttachment> waveAttachment;
     std::unique_ptr<SliderAttachment> asymAttachment;
     std::unique_ptr<ButtonAttachment> asymStereoAttachment;
     std::unique_ptr<SliderAttachment> toneAttachment;
