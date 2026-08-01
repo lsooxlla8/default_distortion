@@ -2,6 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -659,7 +660,8 @@ void testOversamplingPaths (TestContext& context)
     }
 }
 
-double measureModeRms (int mode, bool autoGain, float mix, float noise = 0.0f)
+double measureModeRms (
+    int mode, bool autoGain, float mix, float secondary = 0.0f)
 {
     dd::DistortionEngine engine;
     engine.prepare (sampleRate, blockSize, 2);
@@ -670,7 +672,7 @@ double measureModeRms (int mode, bool autoGain, float mix, float noise = 0.0f)
     parameters.character =
         dd::DistortionEngine::isCharacterBipolar (mode) ? 0.35f : 0.70f;
     parameters.asymmetry = 0.12f;
-    parameters.noise = noise;
+    parameters.secondary = secondary;
     parameters.stages = 2;
     parameters.mix = mix;
     parameters.outputDb = 0.0f;
@@ -842,23 +844,23 @@ void testSecondaryControlAutoGain (TestContext& context)
     };
     expectCompensated (
         dd::DistortionEngine::Mode::tapeHysteresis,
-        [] (dd::Parameters& p) { p.tapeBias = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Tape Bias");
     expectCompensated (
         dd::DistortionEngine::Mode::transformerCore,
-        [] (dd::Parameters& p) { p.transformerAirGap = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Transformer Air Gap");
     expectCompensated (
         dd::DistortionEngine::Mode::downsample,
-        [] (dd::Parameters& p) { p.downsampleJitter = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Downsample Jitter");
     expectCompensated (
         dd::DistortionEngine::Mode::bitCrusher,
-        [] (dd::Parameters& p) { p.bitCrusherDither = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Bit Crusher Dither");
     expectCompensated (
         dd::DistortionEngine::Mode::schmittHysteresis,
-        [] (dd::Parameters& p) { p.schmittSlew = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Schmitt Slew");
 }
 
@@ -1777,11 +1779,11 @@ void testRevisedAlgorithmContracts (TestContext& context)
         "Sine Erosion Frequency scale does not map 50% to 1 kHz and 100% to 10 kHz");
 
     parameters.character = 0.5f;
-    parameters.noise = 0.0f;
+    parameters.secondary = 0.0f;
     dd::DistortionEngine::Visualization sineErosion;
     dd::DistortionEngine::makeVisualization (
         parameters, sampleRate, sineErosion);
-    parameters.noise = 1.0f;
+    parameters.secondary = 1.0f;
     dd::DistortionEngine::Visualization pinkNoiseErosion;
     dd::DistortionEngine::makeVisualization (
         parameters, sampleRate, pinkNoiseErosion);
@@ -1812,6 +1814,8 @@ void testRevisedAlgorithmContracts (TestContext& context)
     parameters.stages = 2;
     parameters.mode = static_cast<int> (
         dd::DistortionEngine::Mode::transformerCore);
+    parameters.secondary = dd::DistortionEngine::getDefaultSecondary (
+        parameters.mode);
     parameters.character = 0.0f;
     dd::DistortionEngine::Visualization transformerLow;
     dd::DistortionEngine::makeVisualization (
@@ -2374,28 +2378,28 @@ void testSecondaryToneControlsAndSineRelease (TestContext& context)
 
     expectSecondaryChange (
         dd::DistortionEngine::Mode::tapeHysteresis,
-        [] (dd::Parameters& p) { p.tapeBias = 0.5f; },
-        [] (dd::Parameters& p) { p.tapeBias = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 0.5f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Tape Bias");
     expectSecondaryChange (
         dd::DistortionEngine::Mode::transformerCore,
-        [] (dd::Parameters& p) { p.transformerAirGap = 0.0f; },
-        [] (dd::Parameters& p) { p.transformerAirGap = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Transformer Air Gap");
     expectSecondaryChange (
         dd::DistortionEngine::Mode::downsample,
-        [] (dd::Parameters& p) { p.downsampleJitter = 0.0f; },
-        [] (dd::Parameters& p) { p.downsampleJitter = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Downsample Jitter");
     expectSecondaryChange (
         dd::DistortionEngine::Mode::bitCrusher,
-        [] (dd::Parameters& p) { p.bitCrusherDither = 0.0f; },
-        [] (dd::Parameters& p) { p.bitCrusherDither = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Bit Crusher Dither");
     expectSecondaryChange (
         dd::DistortionEngine::Mode::schmittHysteresis,
-        [] (dd::Parameters& p) { p.schmittSlew = 0.0f; },
-        [] (dd::Parameters& p) { p.schmittSlew = 1.0f; },
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
         "Schmitt Slew");
 
     dd::Parameters schmittViewParameters;
@@ -2406,7 +2410,7 @@ void testSecondaryToneControlsAndSineRelease (TestContext& context)
     dd::DistortionEngine::Visualization schmittWithoutSlew;
     dd::DistortionEngine::makeVisualization (
         schmittViewParameters, sampleRate, schmittWithoutSlew);
-    schmittViewParameters.schmittSlew = 1.0f;
+    schmittViewParameters.secondary = 1.0f;
     dd::DistortionEngine::Visualization schmittWithSlew;
     dd::DistortionEngine::makeVisualization (
         schmittViewParameters, sampleRate, schmittWithSlew);
@@ -2474,6 +2478,52 @@ void testSecondaryToneControlsAndSineRelease (TestContext& context)
             + juce::String (maximumJump, 4)
             + ", steady-state maximum "
             + juce::String (steadyMaximumJump, 4) + ")");
+}
+
+void testSharedSecondaryContract (TestContext& context)
+{
+    const std::array<std::pair<dd::DistortionEngine::Mode, juce::String>, 6>
+        controls {
+            std::pair { dd::DistortionEngine::Mode::sineErosion, "NOISE" },
+            std::pair { dd::DistortionEngine::Mode::tapeHysteresis, "BIAS" },
+            std::pair { dd::DistortionEngine::Mode::transformerCore, "AIR GAP" },
+            std::pair { dd::DistortionEngine::Mode::downsample, "JITTER" },
+            std::pair { dd::DistortionEngine::Mode::bitCrusher, "DITHER" },
+            std::pair { dd::DistortionEngine::Mode::schmittHysteresis, "SLEW" }
+        };
+
+    for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
+    {
+        const auto match = std::find_if (
+            controls.begin(), controls.end(),
+            [mode] (const auto& control)
+            {
+                return static_cast<int> (control.first) == mode;
+            });
+        const auto expected = match != controls.end();
+        context.expect (
+            dd::DistortionEngine::hasSecondaryControl (mode) == expected,
+            "Shared Secondary visibility is wrong for mode "
+                + juce::String (mode + 1));
+        context.expect (
+            dd::DistortionEngine::getSecondaryName (mode)
+                == (expected ? match->second : juce::String {}),
+            "Shared Secondary label is wrong for mode "
+                + juce::String (mode + 1));
+    }
+
+    context.expect (
+        std::abs (dd::DistortionEngine::getDefaultSecondary (
+            static_cast<int> (
+                dd::DistortionEngine::Mode::tapeHysteresis)) - 0.5f)
+            < 1.0e-6f,
+        "Tape Bias does not reset Shared Secondary to 50%");
+    for (const auto& control : controls)
+        if (control.first != dd::DistortionEngine::Mode::tapeHysteresis)
+            context.expect (
+                std::abs (dd::DistortionEngine::getDefaultSecondary (
+                    static_cast<int> (control.first))) < 1.0e-6f,
+                control.second + " does not reset Shared Secondary to 0%");
 }
 } // namespace
 
@@ -2621,7 +2671,7 @@ static void dumpSineErosionAutoGainTable()
     constexpr std::array<float, 5> characters {
         0.0f, 0.25f, 0.5f, 0.75f, 1.0f
     };
-    constexpr std::array<float, 5> noiseAmounts {
+    constexpr std::array<float, 5> secondaryValues {
         0.0f, 0.25f, 0.5f, 0.75f, 1.0f
     };
     constexpr std::array<float, 3> asymmetries {
@@ -2638,14 +2688,14 @@ static void dumpSineErosionAutoGainTable()
         << "0.0f, 9.0f, 18.0f, 27.0f, 36.0f };\n"
         << "inline constexpr std::array<float, 5> characters { "
         << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
-        << "inline constexpr std::array<float, 5> noiseAmounts { "
+        << "inline constexpr std::array<float, 5> secondaryValues { "
         << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
         << "inline constexpr std::array<float, 3> asymmetries { "
         << "-1.0f, 0.0f, 1.0f };\n"
         << "inline constexpr std::array<float, "
         << rates.size() * dd::DistortionEngine::maximumStages
             * asymmetries.size() * characters.size()
-            * noiseAmounts.size() * drives.size()
+            * secondaryValues.size() * drives.size()
         << "> gains {\n"
         << std::showpoint << std::setprecision (9);
 
@@ -2656,7 +2706,7 @@ static void dumpSineErosionAutoGainTable()
              ++stages)
             for (const auto asymmetry : asymmetries)
                 for (const auto character : characters)
-                    for (const auto noise : noiseAmounts)
+                    for (const auto secondary : secondaryValues)
                         for (const auto drive : drives)
                         {
                             dd::Parameters parameters;
@@ -2664,7 +2714,7 @@ static void dumpSineErosionAutoGainTable()
                                 dd::DistortionEngine::Mode::sineErosion);
                             parameters.driveDb = drive;
                             parameters.character = character;
-                            parameters.noise = noise;
+                            parameters.secondary = secondary;
                             parameters.asymmetry = asymmetry;
                             parameters.stages = stages;
                             const auto gain =
@@ -2755,20 +2805,7 @@ static void dumpSecondaryAutoGainTable()
                                 parameters.character = character;
                                 parameters.asymmetry = asymmetry;
                                 parameters.stages = stages;
-                                if (mode == static_cast<int> (
-                                        dd::DistortionEngine::Mode::tapeHysteresis))
-                                    parameters.tapeBias = secondary;
-                                else if (mode == static_cast<int> (
-                                             dd::DistortionEngine::Mode::transformerCore))
-                                    parameters.transformerAirGap = secondary;
-                                else if (mode == static_cast<int> (
-                                             dd::DistortionEngine::Mode::downsample))
-                                    parameters.downsampleJitter = secondary;
-                                else if (mode == static_cast<int> (
-                                             dd::DistortionEngine::Mode::bitCrusher))
-                                    parameters.bitCrusherDither = secondary;
-                                else
-                                    parameters.schmittSlew = secondary;
+                                parameters.secondary = secondary;
                                 const auto gain =
                                     dd::DistortionEngine::calculateReferenceAutoGain (
                                         parameters, rate);
@@ -2851,6 +2888,7 @@ int main (int argc, char** argv)
     testRevisedAlgorithmContracts (context);
     testRequestedDevelopmentFixes (context);
     testSecondaryToneControlsAndSineRelease (context);
+    testSharedSecondaryContract (context);
     testOutputCeilingAtZeroDb (context);
     testInstantTableAutoGain (context);
 

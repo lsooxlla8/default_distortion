@@ -95,18 +95,6 @@ DefaultDistortionAudioProcessor::createLayout()
         0.0f,
         bipolarAttributes));
 
-    layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::noise, 1 },
-        "Noise",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
-        0.0f,
-        juce::AudioParameterFloatAttributes {}
-            .withLabel ("%")
-            .withStringFromValueFunction ([] (float value, int)
-            {
-                return juce::String (juce::roundToInt (value * 100.0f)) + "%";
-            })));
-
     const auto secondaryAttributes =
         juce::AudioParameterFloatAttributes {}
             .withLabel ("%")
@@ -116,32 +104,8 @@ DefaultDistortionAudioProcessor::createLayout()
             });
 
     layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::tapeBias, 1 },
-        "Tape Bias",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
-        0.5f,
-        secondaryAttributes));
-    layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::transformerAirGap, 1 },
-        "Transformer Air Gap",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
-        0.0f,
-        secondaryAttributes));
-    layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::downsampleJitter, 1 },
-        "Downsample Jitter",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
-        0.0f,
-        secondaryAttributes));
-    layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::bitCrusherDither, 1 },
-        "Bit Crusher Dither",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
-        0.0f,
-        secondaryAttributes));
-    layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::schmittSlew, 1 },
-        "Schmitt Slew",
+        juce::ParameterID { ParamIDs::secondary, 1 },
+        "Secondary",
         juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
         0.0f,
         secondaryAttributes));
@@ -270,16 +234,8 @@ Parameters DefaultDistortionAudioProcessor::getCurrentParameters() const noexcep
         parameters.getRawParameterValue (ParamIDs::mode)->load());
     result.driveDb = parameters.getRawParameterValue (ParamIDs::drive)->load();
     result.character = parameters.getRawParameterValue (ParamIDs::character)->load();
-    result.noise = parameters.getRawParameterValue (ParamIDs::noise)->load();
-    result.tapeBias = parameters.getRawParameterValue (ParamIDs::tapeBias)->load();
-    result.transformerAirGap = parameters.getRawParameterValue (
-        ParamIDs::transformerAirGap)->load();
-    result.downsampleJitter = parameters.getRawParameterValue (
-        ParamIDs::downsampleJitter)->load();
-    result.bitCrusherDither = parameters.getRawParameterValue (
-        ParamIDs::bitCrusherDither)->load();
-    result.schmittSlew = parameters.getRawParameterValue (
-        ParamIDs::schmittSlew)->load();
+    result.secondary = parameters.getRawParameterValue (
+        ParamIDs::secondary)->load();
     result.asymmetry = parameters.getRawParameterValue (ParamIDs::asym)->load();
     result.asymmetryStereo =
         parameters.getRawParameterValue (ParamIDs::asymStereo)->load() >= 0.5f;

@@ -9,12 +9,7 @@ namespace ParamIDs
 inline constexpr auto mode = "mode";
 inline constexpr auto drive = "drive";
 inline constexpr auto character = "character";
-inline constexpr auto noise = "noise";
-inline constexpr auto tapeBias = "tapeBias";
-inline constexpr auto transformerAirGap = "transformerAirGap";
-inline constexpr auto downsampleJitter = "downsampleJitter";
-inline constexpr auto bitCrusherDither = "bitCrusherDither";
-inline constexpr auto schmittSlew = "schmittSlew";
+inline constexpr auto secondary = "secondary";
 inline constexpr auto asym = "asym";
 inline constexpr auto asymStereo = "asymStereo";
 inline constexpr auto tone = "tone";
@@ -30,12 +25,7 @@ struct Parameters
     int mode = 0;
     float driveDb = 0.0f;
     float character = 0.0f;
-    float noise = 0.0f;
-    float tapeBias = 0.5f;
-    float transformerAirGap = 0.0f;
-    float downsampleJitter = 0.0f;
-    float bitCrusherDither = 0.0f;
-    float schmittSlew = 0.0f;
+    float secondary = 0.0f;
     float asymmetry = 0.0f;
     bool asymmetryStereo = false;
     float tone = 0.0f;

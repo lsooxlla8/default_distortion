@@ -63,8 +63,9 @@ the oscillator or filter centre frequency on a 0 Hz to 10 kHz nonlinear scale.
 
 Five other algorithms expose the same compact secondary slider when selected:
 Tape Hysteresis — Bias, Transformer Core — Air Gap, Downsample — Jitter,
-Bit Crusher — Dither, and Schmitt Hysteresis — Slew. Each value is stored and
-automatable independently; switching algorithms does not overwrite it.
+Bit Crusher — Dither, and Schmitt Hysteresis — Slew. They all share one
+automatable `Secondary` parameter; the on-screen label and factory value follow
+the selected algorithm.
 
 ## Build
 

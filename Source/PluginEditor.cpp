@@ -50,6 +50,23 @@ bool differs (float first, float second) noexcept
         != std::bit_cast<std::uint32_t> (second);
 }
 
+juce::String spacedVerticalText (const juce::String& name)
+{
+    juce::String result;
+    for (const auto character : name)
+    {
+        if (character == ' ')
+        {
+            result += "  ";
+            continue;
+        }
+        if (result.isNotEmpty() && ! result.endsWith ("  "))
+            result += " ";
+        result += character;
+    }
+    return result;
+}
+
 class ModeMenuItem final : public juce::PopupMenu::CustomComponent
 {
 public:
@@ -564,13 +581,24 @@ VerticalTextSlider::VerticalTextSlider (
     double defaultValue)
     : text (std::move (verticalText))
 {
-    setName (parameterName);
-    setTitle (parameterName);
     setSliderStyle (juce::Slider::LinearVertical);
     setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     setRange (0.0, 1.0, 0.001);
-    setDoubleClickReturnValue (true, defaultValue);
     setMouseDragSensitivity (140);
+    setDescriptor (
+        std::move (parameterName), std::move (verticalText), defaultValue);
+}
+
+void VerticalTextSlider::setDescriptor (
+    juce::String parameterName,
+    juce::String verticalText,
+    double defaultValue)
+{
+    setName (parameterName);
+    setTitle (parameterName);
+    text = std::move (verticalText);
+    setDoubleClickReturnValue (true, defaultValue);
+    repaint();
 }
 
 void VerticalTextSlider::paint (juce::Graphics& graphics)
@@ -730,18 +758,7 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
         || parameters.mode != visualizedParameters.mode
         || differs (parameters.driveDb, visualizedParameters.driveDb)
         || differs (parameters.character, visualizedParameters.character)
-        || differs (parameters.noise, visualizedParameters.noise)
-        || differs (parameters.tapeBias, visualizedParameters.tapeBias)
-        || differs (
-            parameters.transformerAirGap,
-            visualizedParameters.transformerAirGap)
-        || differs (
-            parameters.downsampleJitter,
-            visualizedParameters.downsampleJitter)
-        || differs (
-            parameters.bitCrusherDither,
-            visualizedParameters.bitCrusherDither)
-        || differs (parameters.schmittSlew, visualizedParameters.schmittSlew)
+        || differs (parameters.secondary, visualizedParameters.secondary)
         || differs (parameters.asymmetry, visualizedParameters.asymmetry)
         || parameters.asymmetryStereo
             != visualizedParameters.asymmetryStereo
@@ -853,10 +870,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     autoGainButton.onClick = [this] { cycleAutoGain(); };
     addAndMakeVisible (autoGainButton);
     addAndMakeVisible (asymStereoButton);
-    for (auto* slider : {
-             &noiseSlider, &tapeBiasSlider, &airGapSlider,
-             &jitterSlider, &ditherSlider, &slewSlider })
-        addAndMakeVisible (*slider);
+    addAndMakeVisible (secondarySlider);
 
     for (auto* control : {
              &drive, &character, &asym, &tone,
@@ -871,10 +885,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     // controls above their neighbouring knobs so neither the connector nor
     // the left frame edge can be covered at larger editor scales.
     asymStereoButton.toFront (false);
-    for (auto* slider : {
-             &noiseSlider, &tapeBiasSlider, &airGapSlider,
-             &jitterSlider, &ditherSlider, &slewSlider })
-        slider->toFront (false);
+    secondarySlider.toFront (false);
 
     drive.slider.setRange (0.0, 36.0, 0.01);
     asym.slider.setRange (-1.0, 1.0, 0.001);
@@ -926,18 +937,8 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     auto& state = ownerProcessor.parameters;
     driveAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::drive, drive.slider);
-    noiseAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::noise, noiseSlider);
-    tapeBiasAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::tapeBias, tapeBiasSlider);
-    airGapAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::transformerAirGap, airGapSlider);
-    jitterAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::downsampleJitter, jitterSlider);
-    ditherAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::bitCrusherDither, ditherSlider);
-    slewAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::schmittSlew, slewSlider);
+    secondaryAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::secondary, secondarySlider);
     asymAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::asym, asym.slider);
     asymStereoAttachment = std::make_unique<ButtonAttachment> (
@@ -1101,6 +1102,15 @@ void DefaultDistortionAudioProcessorEditor::selectMode (int mode)
     if (characterAttachment != nullptr)
         characterAttachment->setValueAsCompleteGesture (
             DistortionEngine::getDefaultCharacter (selected));
+    if (auto* parameter = ownerProcessor.parameters.getParameter (
+            ParamIDs::secondary))
+    {
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost (
+            parameter->convertTo0to1 (
+                DistortionEngine::getDefaultSecondary (selected)));
+        parameter->endChangeGesture();
+    }
 }
 
 void DefaultDistortionAudioProcessorEditor::stepMode (int delta)
@@ -1166,16 +1176,13 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
     };
     drive.slider.updateText();
     character.slider.updateText();
-    const auto modeIs = [this] (DistortionEngine::Mode modeToCheck)
-    {
-        return displayedMode == static_cast<int> (modeToCheck);
-    };
-    noiseSlider.setVisible (modeIs (DistortionEngine::Mode::sineErosion));
-    tapeBiasSlider.setVisible (modeIs (DistortionEngine::Mode::tapeHysteresis));
-    airGapSlider.setVisible (modeIs (DistortionEngine::Mode::transformerCore));
-    jitterSlider.setVisible (modeIs (DistortionEngine::Mode::downsample));
-    ditherSlider.setVisible (modeIs (DistortionEngine::Mode::bitCrusher));
-    slewSlider.setVisible (modeIs (DistortionEngine::Mode::schmittHysteresis));
+    const auto secondaryName = DistortionEngine::getSecondaryName (displayedMode);
+    secondarySlider.setDescriptor (
+        secondaryName,
+        spacedVerticalText (secondaryName),
+        DistortionEngine::getDefaultSecondary (displayedMode));
+    secondarySlider.setVisible (
+        DistortionEngine::hasSecondaryControl (displayedMode));
     drive.repaint();
     character.repaint();
 }
@@ -1309,10 +1316,7 @@ void DefaultDistortionAudioProcessorEditor::resized()
     constexpr int controlWidth = 126;
     constexpr int controlHeight = 128;
     drive.setBounds (scaled (27, 78, 100, controlHeight));
-    for (auto* slider : {
-             &noiseSlider, &tapeBiasSlider, &airGapSlider,
-             &jitterSlider, &ditherSlider, &slewSlider })
-        slider->setBounds (scaled (112, 107, 31, 69));
+    secondarySlider.setBounds (scaled (112, 107, 31, 69));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
     asym.setBounds (scaled (285, 78, 100, controlHeight));
     asymStereoButton.setBounds (scaled (370, 107, 32, 69));

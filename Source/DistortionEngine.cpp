@@ -102,19 +102,14 @@ float secondaryParameterForMode (
     DistortionEngine::Mode mode,
     const Parameters& parameters) noexcept
 {
-    if (mode == DistortionEngine::Mode::sineErosion)
-        return parameters.noise;
-    if (mode == DistortionEngine::Mode::tapeHysteresis)
-        return parameters.tapeBias;
-    if (mode == DistortionEngine::Mode::transformerCore)
-        return parameters.transformerAirGap;
-    if (mode == DistortionEngine::Mode::downsample)
-        return parameters.downsampleJitter;
-    if (mode == DistortionEngine::Mode::bitCrusher)
-        return parameters.bitCrusherDither;
-    if (mode == DistortionEngine::Mode::schmittHysteresis)
-        return parameters.schmittSlew;
-    return 0.0f;
+    return mode == DistortionEngine::Mode::sineErosion
+            || mode == DistortionEngine::Mode::tapeHysteresis
+            || mode == DistortionEngine::Mode::transformerCore
+            || mode == DistortionEngine::Mode::downsample
+            || mode == DistortionEngine::Mode::bitCrusher
+            || mode == DistortionEngine::Mode::schmittHysteresis
+        ? parameters.secondary
+        : 0.0f;
 }
 
 float smoothTowards (float current, float target, double rate, double timeSeconds) noexcept
@@ -457,6 +452,38 @@ float DistortionEngine::getDefaultCharacter (int mode) noexcept
             || selected == Mode::sineErosion
         ? 0.5f
         : 0.0f;
+}
+
+bool DistortionEngine::hasSecondaryControl (int mode) noexcept
+{
+    const auto selected = static_cast<Mode> (
+        juce::jlimit (0, modeCount - 1, mode));
+    return selected == Mode::sineErosion
+        || selected == Mode::tapeHysteresis
+        || selected == Mode::transformerCore
+        || selected == Mode::downsample
+        || selected == Mode::bitCrusher
+        || selected == Mode::schmittHysteresis;
+}
+
+float DistortionEngine::getDefaultSecondary (int mode) noexcept
+{
+    const auto selected = static_cast<Mode> (
+        juce::jlimit (0, modeCount - 1, mode));
+    return selected == Mode::tapeHysteresis ? 0.5f : 0.0f;
+}
+
+juce::String DistortionEngine::getSecondaryName (int mode)
+{
+    const auto selected = static_cast<Mode> (
+        juce::jlimit (0, modeCount - 1, mode));
+    if (selected == Mode::sineErosion) return "NOISE";
+    if (selected == Mode::tapeHysteresis) return "BIAS";
+    if (selected == Mode::transformerCore) return "AIR GAP";
+    if (selected == Mode::downsample) return "JITTER";
+    if (selected == Mode::bitCrusher) return "DITHER";
+    if (selected == Mode::schmittHysteresis) return "SLEW";
+    return {};
 }
 
 juce::String DistortionEngine::formatCharacterValue (int mode,
@@ -984,12 +1011,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     Parameters blockStart = parameters;
     blockStart.driveDb = smoothedDriveDb;
     blockStart.character = smoothedCharacter;
-    blockStart.noise = smoothedNoise;
-    blockStart.tapeBias = smoothedTapeBias;
-    blockStart.transformerAirGap = smoothedTransformerAirGap;
-    blockStart.downsampleJitter = smoothedDownsampleJitter;
-    blockStart.bitCrusherDither = smoothedBitCrusherDither;
-    blockStart.schmittSlew = smoothedSchmittSlew;
+    blockStart.secondary = smoothedSecondary;
     blockStart.asymmetry = smoothedAsymmetry;
     blockStart.tone = smoothedTone;
     blockStart.mix = smoothedMix;
@@ -998,30 +1020,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
         smoothedDriveDb, parameters.driveDb, parameterUpdateRate, 0.015);
     smoothedCharacter = smoothTowards (
         smoothedCharacter, parameters.character, parameterUpdateRate, 0.015);
-    smoothedNoise = smoothTowards (
-        smoothedNoise, parameters.noise, parameterUpdateRate, 0.015);
-    smoothedTapeBias = smoothTowards (
-        smoothedTapeBias, parameters.tapeBias, parameterUpdateRate, 0.015);
-    smoothedTransformerAirGap = smoothTowards (
-        smoothedTransformerAirGap,
-        parameters.transformerAirGap,
-        parameterUpdateRate,
-        0.015);
-    smoothedDownsampleJitter = smoothTowards (
-        smoothedDownsampleJitter,
-        parameters.downsampleJitter,
-        parameterUpdateRate,
-        0.015);
-    smoothedBitCrusherDither = smoothTowards (
-        smoothedBitCrusherDither,
-        parameters.bitCrusherDither,
-        parameterUpdateRate,
-        0.015);
-    smoothedSchmittSlew = smoothTowards (
-        smoothedSchmittSlew,
-        parameters.schmittSlew,
-        parameterUpdateRate,
-        0.015);
+    smoothedSecondary = smoothTowards (
+        smoothedSecondary, parameters.secondary, parameterUpdateRate, 0.015);
     smoothedAsymmetry = smoothTowards (
         smoothedAsymmetry, parameters.asymmetry, parameterUpdateRate, 0.015);
     smoothedTone = smoothTowards (
@@ -1034,12 +1034,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     Parameters smoothed = parameters;
     smoothed.driveDb = smoothedDriveDb;
     smoothed.character = smoothedCharacter;
-    smoothed.noise = smoothedNoise;
-    smoothed.tapeBias = smoothedTapeBias;
-    smoothed.transformerAirGap = smoothedTransformerAirGap;
-    smoothed.downsampleJitter = smoothedDownsampleJitter;
-    smoothed.bitCrusherDither = smoothedBitCrusherDither;
-    smoothed.schmittSlew = smoothedSchmittSlew;
+    smoothed.secondary = smoothedSecondary;
     smoothed.asymmetry = smoothedAsymmetry;
     smoothed.tone = smoothedTone;
     smoothed.mix = smoothedMix;
@@ -1431,25 +1426,9 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
                 .mode = endParameters.mode,
                 .driveDb = driveDb,
                 .character = character,
-                .noise = lerp (
-                    startParameters.noise, endParameters.noise, ramp),
-                .tapeBias = lerp (
-                    startParameters.tapeBias, endParameters.tapeBias, ramp),
-                .transformerAirGap = lerp (
-                    startParameters.transformerAirGap,
-                    endParameters.transformerAirGap,
-                    ramp),
-                .downsampleJitter = lerp (
-                    startParameters.downsampleJitter,
-                    endParameters.downsampleJitter,
-                    ramp),
-                .bitCrusherDither = lerp (
-                    startParameters.bitCrusherDither,
-                    endParameters.bitCrusherDither,
-                    ramp),
-                .schmittSlew = lerp (
-                    startParameters.schmittSlew,
-                    endParameters.schmittSlew,
+                .secondary = lerp (
+                    startParameters.secondary,
+                    endParameters.secondary,
                     ramp)
             };
             const auto asymmetry = lerp (
@@ -1863,7 +1842,8 @@ float DistortionEngine::processModeSample (float input,
             const auto filteredPink = std::tanh (7.0f * band2);
 
             // Both sources are bipolar before the shared unipolar conversion,
-            // so Noise morphs without changing the delay's average position.
+            // so the Noise control morphs without changing the delay's average
+            // position.
             // Frequency=0 stays exactly transparent for either source.
             const auto source = lerp (sine, filteredPink, p[3]);
             const auto modulator = p[0] <= 0.0f
@@ -2589,21 +2569,22 @@ float DistortionEngine::lookupDeterministicGain (
         const auto characterPosition = tablePosition (
             characters,
             juce::jlimit (0.0f, 1.0f, parameters.character));
-        const auto noisePosition = tablePosition (
-            noiseAmounts, juce::jlimit (0.0f, 1.0f, parameters.noise));
+        const auto secondaryPosition = tablePosition (
+            secondaryValues,
+            juce::jlimit (0.0f, 1.0f, parameters.secondary));
         const auto drivePosition = tablePosition (
             drives, juce::jlimit (0.0f, 36.0f, parameters.driveDb));
         const auto valueAt = [&] (size_t rate,
                                   size_t asymmetry,
                                   size_t character,
-                                  size_t noise,
+                                  size_t secondary,
                                   size_t drive)
         {
             return gains[
                 (((((rate * maximumStages + stage)
                      * asymmetries.size() + asymmetry)
                     * characters.size() + character)
-                   * noiseAmounts.size() + noise)
+                   * secondaryValues.size() + secondary)
                   * drives.size() + drive)];
         };
         const auto interpolateAtRate = [&] (size_t rate)
@@ -2612,21 +2593,21 @@ float DistortionEngine::lookupDeterministicGain (
             {
                 const auto interpolateAtCharacter = [&] (size_t character)
                 {
-                    const auto interpolateAtNoise = [&] (size_t noise)
+                    const auto interpolateAtSecondary = [&] (size_t secondary)
                     {
                         return lerp (
                             valueAt (
-                                rate, asymmetry, character, noise,
+                                rate, asymmetry, character, secondary,
                                 drivePosition.lower),
                             valueAt (
-                                rate, asymmetry, character, noise,
+                                rate, asymmetry, character, secondary,
                                 drivePosition.upper),
                             drivePosition.fraction);
                     };
                     return lerp (
-                        interpolateAtNoise (noisePosition.lower),
-                        interpolateAtNoise (noisePosition.upper),
-                        noisePosition.fraction);
+                        interpolateAtSecondary (secondaryPosition.lower),
+                        interpolateAtSecondary (secondaryPosition.upper),
+                        secondaryPosition.fraction);
                 };
                 return lerp (
                     interpolateAtCharacter (characterPosition.lower),

@@ -91,6 +91,9 @@ public:
     static bool isCharacterBipolar (int mode) noexcept;
     static bool isCharacterStepped (int mode) noexcept;
     static float getDefaultCharacter (int mode) noexcept;
+    static bool hasSecondaryControl (int mode) noexcept;
+    static float getDefaultSecondary (int mode) noexcept;
+    static juce::String getSecondaryName (int mode);
     static juce::String formatCharacterValue (int mode,
                                               float rawValue,
                                               double sampleRate = 48000.0);
@@ -343,12 +346,7 @@ private:
 
     float smoothedDriveDb = 0.0f;
     float smoothedCharacter = 0.0f;
-    float smoothedNoise = 0.0f;
-    float smoothedTapeBias = 0.5f;
-    float smoothedTransformerAirGap = 0.0f;
-    float smoothedDownsampleJitter = 0.0f;
-    float smoothedBitCrusherDither = 0.0f;
-    float smoothedSchmittSlew = 0.0f;
+    float smoothedSecondary = 0.0f;
     float smoothedAsymmetry = 0.0f;
     float smoothedTone = 0.0f;
     float smoothedMix = 1.0f;

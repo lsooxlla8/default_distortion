@@ -78,7 +78,7 @@ Drive/Character/Asymmetry mapping, stage behaviour, DC filtering, or reference
 calibration must regenerate and commit all four tables.**
 
 Build the test generator first, then regenerate the main table, the dense
-Spectral Clip table, the Sine Erosion table with its additional Noise axis,
+Spectral Clip table, the Sine Erosion table with its additional Secondary axis,
 and the focused table for algorithm-specific secondary controls:
 
 ```sh
@@ -99,7 +99,7 @@ ctest --test-dir build -C Release --output-on-failure
 30 internal mode IDs at four sample rates, all eight stage counts, and a grid
 across Drive, Character, and Asymmetry. Spectral Clip has a denser dedicated
 table because its makeup curve changes more sharply between the main grid
-points. Sine Erosion has a dedicated table so Noise can be calibrated without
+points. Sine Erosion has a dedicated table so Secondary can be calibrated without
 needlessly multiplying every other mode's table by that extra dimension.
 The secondary-control table covers Tape Bias, Transformer Air Gap, Downsample
 Jitter, Bit Crusher Dither, and Schmitt Slew without adding a redundant axis
