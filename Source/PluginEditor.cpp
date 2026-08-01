@@ -516,7 +516,7 @@ void VerticalTextButton::paintButton (
 {
     const auto active = getToggleState() || isDown;
     const auto scale = scaleOf (*this);
-    const auto connectorWidth = juce::jmax (4.0f, 11.0f * scale);
+    const auto connectorWidth = juce::jmax (3.0f, 7.0f * scale);
     auto body = getLocalBounds().toFloat();
     body.removeFromLeft (connectorWidth);
     const auto foreground = foregroundOf (*this);
@@ -576,7 +576,7 @@ VerticalTextSlider::VerticalTextSlider (
 void VerticalTextSlider::paint (juce::Graphics& graphics)
 {
     const auto scale = scaleOf (*this);
-    const auto connectorWidth = juce::jmax (4.0f, 11.0f * scale);
+    const auto connectorWidth = juce::jmax (3.0f, 7.0f * scale);
     auto bounds = getLocalBounds().toFloat();
     bounds.removeFromLeft (connectorWidth);
     const auto foreground = foregroundOf (*this);
@@ -1312,10 +1312,10 @@ void DefaultDistortionAudioProcessorEditor::resized()
     for (auto* slider : {
              &waveSlider, &tapeBiasSlider, &airGapSlider,
              &jitterSlider, &ditherSlider, &slewSlider })
-        slider->setBounds (scaled (108, 107, 35, 69));
+        slider->setBounds (scaled (112, 107, 31, 69));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
     asym.setBounds (scaled (285, 78, 100, controlHeight));
-    asymStereoButton.setBounds (scaled (366, 107, 36, 69));
+    asymStereoButton.setBounds (scaled (370, 107, 32, 69));
     tone.setBounds (scaled (414, 78, 100, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
     output.setBounds (scaled (143, 212, controlWidth, controlHeight));
