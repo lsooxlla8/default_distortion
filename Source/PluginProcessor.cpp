@@ -95,6 +95,21 @@ DefaultDistortionAudioProcessor::createLayout()
         0.0f,
         bipolarAttributes));
 
+    const auto secondaryAttributes =
+        juce::AudioParameterFloatAttributes {}
+            .withLabel ("%")
+            .withStringFromValueFunction ([] (float value, int)
+            {
+                return juce::String (juce::roundToInt (value * 100.0f)) + "%";
+            });
+
+    layout.add (std::make_unique<Float> (
+        juce::ParameterID { ParamIDs::secondary, 1 },
+        "Secondary",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
+        0.0f,
+        secondaryAttributes));
+
     layout.add (std::make_unique<Float> (
         juce::ParameterID { ParamIDs::asym, 1 },
         "Asymmetry",
@@ -173,9 +188,9 @@ void DefaultDistortionAudioProcessor::prepareToPlay (double newSampleRate,
         newSampleRate,
         samplesPerBlock,
         juce::jmax (1, getTotalNumOutputChannels()));
-    // Initial deterministic compensation is prepared on the host's setup
-    // thread. Subsequent parameter edits are recalibrated by the engine's
-    // worker, never by the real-time audio callback.
+    // Prime deterministic compensation on the host setup thread. Subsequent
+    // edits use the pre-generated table directly in the audio callback; no
+    // programme measurement or background recalibration is involved.
     engine.primeAutoGain (getCurrentParameters());
     setLatencySamples (engine.getLatencySamples());
 }
@@ -219,6 +234,8 @@ Parameters DefaultDistortionAudioProcessor::getCurrentParameters() const noexcep
         parameters.getRawParameterValue (ParamIDs::mode)->load());
     result.driveDb = parameters.getRawParameterValue (ParamIDs::drive)->load();
     result.character = parameters.getRawParameterValue (ParamIDs::character)->load();
+    result.secondary = parameters.getRawParameterValue (
+        ParamIDs::secondary)->load();
     result.asymmetry = parameters.getRawParameterValue (ParamIDs::asym)->load();
     result.asymmetryStereo =
         parameters.getRawParameterValue (ParamIDs::asymStereo)->load() >= 0.5f;

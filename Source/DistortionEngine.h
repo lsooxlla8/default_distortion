@@ -9,12 +9,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <mutex>
-#include <thread>
 #include <vector>
 
 namespace dd
@@ -42,7 +39,7 @@ public:
         fullWaveRectifier,
         softFullWaveRectifier,
         transformerCore,
-        halfWaveRectifier,
+        sineErosion,
         classBSaturation,
         topologyFold,
         recursiveFoldback,
@@ -89,9 +86,14 @@ public:
 
     static const std::array<juce::String, modeCount>& getModeNames();
     static const std::array<juce::String, modeCount>& getCharacterNames();
+    static int getModeForDisplayPosition (int position) noexcept;
+    static int getDisplayPositionForMode (int mode) noexcept;
     static bool isCharacterBipolar (int mode) noexcept;
     static bool isCharacterStepped (int mode) noexcept;
     static float getDefaultCharacter (int mode) noexcept;
+    static bool hasSecondaryControl (int mode) noexcept;
+    static float getDefaultSecondary (int mode) noexcept;
+    static juce::String getSecondaryName (int mode);
     static juce::String formatCharacterValue (int mode,
                                               float rawValue,
                                               double sampleRate = 48000.0);
@@ -101,6 +103,10 @@ public:
     static void makeVisualization (const Parameters&,
                                    double sampleRate,
                                    Visualization&);
+    // Offline reference used to regenerate Source/AutoGainTable.h whenever a
+    // distortion algorithm or its parameter mapping changes.
+    static float calculateReferenceAutoGain (const Parameters&,
+                                             double sampleRate);
 
 private:
     struct StageState
@@ -111,8 +117,19 @@ private:
         float secondary = 0.0f;
         float envelope = 0.0f;
         float heldSample = 0.0f;
+        float tailGain = 1.0f;
+        float pinkA = 0.0f;
+        float pinkB = 0.0f;
+        float pinkC = 0.0f;
+        float bandpassIc1 = 0.0f;
+        float bandpassIc2 = 0.0f;
+        float bandpass2Ic1 = 0.0f;
+        float bandpass2Ic2 = 0.0f;
+        float smoothedDelaySamples = 0.0f;
         double phase = 0.0;
+        std::uint32_t noiseState = UINT32_C (0x9e3779b9);
         int counter = 0;
+        int silenceSamples = 0;
         int phaseWritePosition = 0;
         bool gateHigh = false;
         chowtape::State tape;
@@ -133,8 +150,19 @@ private:
             secondary = 0.0f;
             envelope = 0.0f;
             heldSample = 0.0f;
+            tailGain = 1.0f;
+            pinkA = 0.0f;
+            pinkB = 0.0f;
+            pinkC = 0.0f;
+            bandpassIc1 = 0.0f;
+            bandpassIc2 = 0.0f;
+            bandpass2Ic1 = 0.0f;
+            bandpass2Ic2 = 0.0f;
+            smoothedDelaySamples = 0.0f;
             phase = 0.0;
+            noiseState = UINT32_C (0x9e3779b9);
             counter = 0;
+            silenceSamples = 0;
             phaseWritePosition = 0;
             gateHigh = false;
             tape = {};
@@ -147,6 +175,7 @@ private:
         Mode mode = Mode::morphSoftClip;
         float character = 0.0f;
         float character01 = 0.0f;
+        float secondaryParameter = 0.0f;
         float asymmetry = 0.0f;
         float driveNormalised = 0.0f;
         double processingSampleRate = 44100.0;
@@ -217,7 +246,8 @@ private:
     void processTonePre (juce::AudioBuffer<float>&);
     void processTonePost (juce::AudioBuffer<float>&);
     void processNonlinearBlock (juce::dsp::AudioBlock<float> block,
-                                const Parameters& parameters,
+                                const Parameters& startParameters,
+                                const Parameters& endParameters,
                                 double processingSampleRate,
                                 double hostSampleRate);
     void processSpectralBlock (juce::AudioBuffer<float>&,
@@ -239,6 +269,7 @@ private:
 
     static ModeContext makeModeContext (Mode mode,
                                         float character,
+                                        float secondaryParameter,
                                         float asymmetry,
                                         float driveNormalised,
                                         double processingSampleRate,
@@ -275,8 +306,6 @@ private:
     static bool usesLegacyDrivePath (Mode mode) noexcept;
     static bool usesDriveAsAlgorithmParameter (Mode mode) noexcept;
     static bool usesOversampling (Mode mode) noexcept;
-    float calculateDeterministicGain (const Parameters& parameters,
-                                      double sampleRate);
     void resetSmartAutoGain() noexcept;
     void prepareKWeightingFilters();
     void accumulateLoudnessSample (float dry, float wet, int channel) noexcept;
@@ -284,9 +313,8 @@ private:
     static double calculateGatedLoudnessEnergy (
         const std::array<double, 8>& blocks,
         int blockCount) noexcept;
-    void requestDeterministicGain (
-        const Parameters&, double, std::uint64_t) noexcept;
-    void deterministicGainWorkerLoop();
+    static float lookupDeterministicGain (
+        const Parameters&, double sampleRate) noexcept;
 
     double sampleRate = 44100.0;
     int preparedChannels = 2;
@@ -302,6 +330,7 @@ private:
     std::array<KWeightingFilter, maximumChannels> smartWetKWeighting {};
     std::array<float, maximumChannels> dcPreviousInput {};
     std::array<float, maximumChannels> dcPreviousOutput {};
+    std::array<float, maximumChannels> dcMixState {};
 
     std::array<std::unique_ptr<Oversampler>, 3> oversamplers;
     std::array<int, 3> oversamplingLatencies {};
@@ -317,6 +346,7 @@ private:
 
     float smoothedDriveDb = 0.0f;
     float smoothedCharacter = 0.0f;
+    float smoothedSecondary = 0.0f;
     float smoothedAsymmetry = 0.0f;
     float smoothedTone = 0.0f;
     float smoothedMix = 1.0f;
@@ -338,24 +368,11 @@ private:
     int smartStableSamples = 0;
     int smartMeasuredSamples = 0;
     bool smartGainLocked = false;
-    bool gainCalibrationPending = false;
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };
     std::uint64_t lastGainSignature = 0;
     std::uint64_t lastSmartGainSignature = 0;
-    std::uint64_t appliedGainSignature = 0;
     float lastToneCoefficientAmount = std::numeric_limits<float>::quiet_NaN();
     bool toneFiltersBypassed = true;
-
-    std::thread gainWorker;
-    std::mutex gainWorkerMutex;
-    std::condition_variable gainWorkerCondition;
-    Parameters queuedGainParameters;
-    double queuedGainSampleRate = 44100.0;
-    std::uint64_t queuedGainSignature = 0;
-    bool gainJobPending = false;
-    bool gainWorkerShouldExit = false;
-    std::atomic<float> completedDeterministicGain { 1.0f };
-    std::atomic<std::uint64_t> completedGainSignature { 0 };
 };
 } // namespace dd

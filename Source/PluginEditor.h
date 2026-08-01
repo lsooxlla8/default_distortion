@@ -117,6 +117,21 @@ public:
     void paintButton (juce::Graphics&, bool, bool) override;
 };
 
+class VerticalTextSlider final : public juce::Slider
+{
+public:
+    VerticalTextSlider (juce::String parameterName,
+                        juce::String verticalText,
+                        double defaultValue);
+    void setDescriptor (juce::String parameterName,
+                        juce::String verticalText,
+                        double defaultValue);
+    void paint (juce::Graphics&) override;
+
+private:
+    juce::String text;
+};
+
 class ResponseDisplay final : public juce::Component,
                               private juce::Timer
 {
@@ -172,6 +187,9 @@ private:
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
     VerticalTextButton asymStereoButton;
+    VerticalTextSlider secondarySlider {
+        "SECONDARY", "S E C O N D A R Y", 0.0
+    };
 
     ParameterControl drive { "DRIVE" };
     ParameterControl character { "CURVE" };
@@ -184,6 +202,7 @@ private:
     ResponseDisplay responseDisplay;
 
     std::unique_ptr<SliderAttachment> driveAttachment;
+    std::unique_ptr<SliderAttachment> secondaryAttachment;
     std::unique_ptr<SliderAttachment> asymAttachment;
     std::unique_ptr<ButtonAttachment> asymStereoAttachment;
     std::unique_ptr<SliderAttachment> toneAttachment;
@@ -191,6 +210,7 @@ private:
     std::unique_ptr<SliderAttachment> mixAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
     std::unique_ptr<SliderAttachment> qualityAttachment;
+    std::unique_ptr<juce::ParameterAttachment> modeAttachment;
     std::unique_ptr<juce::ParameterAttachment> autoGainAttachment;
     std::unique_ptr<juce::ParameterAttachment> characterAttachment;
 

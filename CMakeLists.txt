@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(default_distortion VERSION 0.5.7 LANGUAGES C CXX)
+project(default_distortion VERSION 0.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,9 @@ target_sources(DefaultDistortion
     PRIVATE
         Source/DistortionEngine.cpp
         Source/DistortionEngine.h
+        Source/AutoGainTable.h
+        Source/SpectralAutoGainTable.h
+        Source/SecondaryAutoGainTable.h
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
         Source/PluginEditor.cpp
@@ -99,6 +102,9 @@ target_sources(DefaultDistortionTests
     PRIVATE
         Source/DistortionEngine.cpp
         Source/DistortionEngine.h
+        Source/AutoGainTable.h
+        Source/SpectralAutoGainTable.h
+        Source/SecondaryAutoGainTable.h
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
         Tests/DspTests.cpp

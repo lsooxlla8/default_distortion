@@ -2,6 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -120,7 +121,7 @@ void testModeMetadata (TestContext& context)
         "Full-Wave Rectifier",
         "Soft Full-Wave",
         "Transformer Core",
-        "Half-Wave Rectifier",
+        "Sine Erosion",
         "Class-B Saturation",
         "Topology Fold",
         "Recursive Foldback",
@@ -143,6 +144,14 @@ void testModeMetadata (TestContext& context)
     context.expect (
         characterNames.size() == names.size(),
         "Character labels do not match mode count");
+    context.expect (
+        dd::DistortionEngine::getModeForDisplayPosition (9)
+                == static_cast<int> (
+                    dd::DistortionEngine::Mode::sineErosion)
+            && dd::DistortionEngine::getDisplayPositionForMode (
+                static_cast<int> (
+                    dd::DistortionEngine::Mode::sineErosion)) == 9,
+        "Sine Erosion is not tenth in the user-facing mode order");
 
     std::set<std::string> uniqueNames;
     for (const auto& name : names)
@@ -229,10 +238,13 @@ void testCanonicalClipCeilings (TestContext& context)
                 view.output.begin(), view.output.end());
             const auto maximumPeak =
                 mode == dd::DistortionEngine::Mode::morphSoftClip
-                    ? 1.02f
+                    ? 1.25001f
                     : 1.00001f;
             context.expect (
-                peak >= 0.999f && peak <= maximumPeak,
+                peak >= (mode == dd::DistortionEngine::Mode::morphSoftClip
+                            ? 1.249f
+                            : 0.999f)
+                    && peak <= maximumPeak,
                 dd::DistortionEngine::getModeNames()[
                     static_cast<size_t> (parameters.mode)]
                     + " ceiling is not 0 dBFS");
@@ -301,12 +313,13 @@ void testVitalClipTransfers (TestContext& context)
         for (size_t point = 0; point < view.input.size(); ++point)
         {
             const auto input = view.input[point];
-            const auto expected = vitalTanhReference (input);
+            const auto expected = vitalTanhReference (input)
+                * (1.25f / std::abs (vitalTanhReference (1.5f)));
             context.expect (
                 std::abs (view.output[point] - expected) < 2.0e-6f,
                 dd::DistortionEngine::getModeNames()[
                     static_cast<size_t> (parameters.mode)]
-                    + " no longer matches the copied Vital transfer");
+                    + " preview no longer uses a linearly scaled Vital curve");
         }
     }
 
@@ -411,7 +424,7 @@ void testClipMorphEndpointsAndHardPlateau (TestContext& context)
                 vitalTanhReference (drivenInput));
             const auto expected =
                 mode == dd::DistortionEngine::Mode::morphSoftClip
-                    ? cubicReference (view.input[point])
+                    ? 1.25f * cubicReference (view.input[point])
                     : view.input[point]
                         + depth
                             * (hardSoftEndpoint - view.input[point]);
@@ -647,7 +660,8 @@ void testOversamplingPaths (TestContext& context)
     }
 }
 
-double measureModeRms (int mode, bool autoGain, float mix)
+double measureModeRms (
+    int mode, bool autoGain, float mix, float secondary = 0.0f)
 {
     dd::DistortionEngine engine;
     engine.prepare (sampleRate, blockSize, 2);
@@ -658,6 +672,7 @@ double measureModeRms (int mode, bool autoGain, float mix)
     parameters.character =
         dd::DistortionEngine::isCharacterBipolar (mode) ? 0.35f : 0.70f;
     parameters.asymmetry = 0.12f;
+    parameters.secondary = secondary;
     parameters.stages = 2;
     parameters.mix = mix;
     parameters.outputDb = 0.0f;
@@ -671,7 +686,18 @@ double measureModeRms (int mode, bool autoGain, float mix)
     int countedSamples = 0;
     for (int block = 0; block < 180; ++block)
     {
-        fillSignal (buffer, phase);
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            const auto value = 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0
+                    * phase / sampleRate));
+            for (int channel = 0;
+                 channel < buffer.getNumChannels();
+                 ++channel)
+                buffer.setSample (channel, sample, value);
+            phase += 1.0;
+        }
         engine.process (buffer, parameters);
         if (block < 120)
             continue;
@@ -686,6 +712,39 @@ double measureModeRms (int mode, bool autoGain, float mix)
             }
     }
 
+    return std::sqrt (energy / juce::jmax (1, countedSamples));
+}
+
+double measureConfiguredRms (dd::Parameters parameters,
+                             bool autoGain,
+                             float mix)
+{
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+    parameters.mix = mix;
+    parameters.autoGainMode = autoGain ? 1 : 0;
+    engine.primeAutoGain (parameters);
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    double phase = 0.0;
+    double energy = 0.0;
+    int countedSamples = 0;
+    for (int block = 0; block < 180; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+            buffer.setSample (0, sample, 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0
+                    * phase++ / sampleRate)));
+        engine.process (buffer, parameters);
+        if (block < 120)
+            continue;
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = static_cast<double> (buffer.getSample (0, sample));
+            energy += value * value;
+            ++countedSamples;
+        }
+    }
     return std::sqrt (energy / juce::jmax (1, countedSamples));
 }
 
@@ -740,6 +799,71 @@ void testSpectralClipAutoGain (TestContext& context)
         "Spectral Clip deterministic Auto Gain does not improve level matching");
 }
 
+void testSineErosionNoiseAutoGain (TestContext& context)
+{
+    const auto mode = static_cast<int> (
+        dd::DistortionEngine::Mode::sineErosion);
+    const auto dry = measureModeRms (mode, false, 0.0f, 1.0f);
+    const auto compensated = measureModeRms (mode, true, 1.0f, 1.0f);
+    const auto errorDb = std::abs (juce::Decibels::gainToDecibels (
+        static_cast<float> (compensated / dry), -100.0f));
+    context.expect (
+        std::isfinite (compensated) && errorDb <= 1.0f,
+        "Sine Erosion Noise-aware Auto Gain misses the dry reference by "
+            + juce::String (errorDb, 2) + " dB");
+}
+
+void testSecondaryControlAutoGain (TestContext& context)
+{
+    dd::Parameters parameters;
+    parameters.driveDb = 18.0f;
+    parameters.character = 0.75f;
+    parameters.stages = 2;
+    const auto dry = measureConfiguredRms (parameters, false, 0.0f);
+    const auto expectCompensated = [&] (
+        dd::DistortionEngine::Mode mode,
+        auto setSecondary,
+        const juce::String& name)
+    {
+        auto configured = parameters;
+        configured.mode = static_cast<int> (mode);
+        setSecondary (configured);
+        const auto wet = measureConfiguredRms (configured, true, 1.0f);
+        const auto referenceGain = dd::DistortionEngine::calculateReferenceAutoGain (
+            configured, sampleRate);
+        const auto errorDb = std::abs (juce::Decibels::gainToDecibels (
+            static_cast<float> (wet / dry), -100.0f));
+        context.expect (
+            std::isfinite (wet)
+                && errorDb <= (mode == dd::DistortionEngine::Mode::downsample
+                        ? 2.0f
+                        : 1.0f),
+            name + "-aware Auto Gain misses dry RMS by "
+                + juce::String (errorDb, 2) + " dB (reference gain "
+                + juce::String (referenceGain, 4) + ")");
+    };
+    expectCompensated (
+        dd::DistortionEngine::Mode::tapeHysteresis,
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Tape Bias");
+    expectCompensated (
+        dd::DistortionEngine::Mode::transformerCore,
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Transformer Air Gap");
+    expectCompensated (
+        dd::DistortionEngine::Mode::downsample,
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Downsample Jitter");
+    expectCompensated (
+        dd::DistortionEngine::Mode::bitCrusher,
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Bit Crusher Dither");
+    expectCompensated (
+        dd::DistortionEngine::Mode::schmittHysteresis,
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Schmitt Slew");
+}
+
 void testEveryCharacterHasARealVisualization (TestContext& context)
 {
     for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
@@ -784,13 +908,20 @@ void testEveryCharacterHasARealVisualization (TestContext& context)
 
 void testDownsampleExtreme (TestContext& context)
 {
-    const auto text = dd::DistortionEngine::formatDriveValue (
+    const auto midpointText = dd::DistortionEngine::formatDriveValue (
+        static_cast<int> (dd::DistortionEngine::Mode::downsample),
+        18.0f,
+        sampleRate);
+    const auto maximumText = dd::DistortionEngine::formatDriveValue (
         static_cast<int> (dd::DistortionEngine::Mode::downsample),
         36.0f,
         sampleRate);
     context.expect (
-        text.containsIgnoreCase ("1.0 Hz"),
-        "Downsample maximum does not reach a one-Hertz sample clock");
+        midpointText.containsIgnoreCase ("2.0 kHz"),
+        "Downsample midpoint does not reach a two-kilohertz sample clock");
+    context.expect (
+        maximumText.containsIgnoreCase ("20.0 Hz"),
+        "Downsample maximum does not reach a twenty-Hertz sample clock");
 }
 
 std::vector<double> buildModeSignature (int mode)
@@ -1486,7 +1617,7 @@ void testOutputCeilingAtZeroDb (TestContext& context)
     }
 }
 
-void testRealtimeGainCalibrationWorker (TestContext& context)
+void testInstantTableAutoGain (TestContext& context)
 {
     auto engine = std::make_unique<dd::DistortionEngine>();
     engine->prepare (sampleRate, blockSize, 2);
@@ -1510,11 +1641,9 @@ void testRealtimeGainCalibrationWorker (TestContext& context)
             for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
                 context.expect (
                     std::isfinite (buffer.getSample (channel, sample)),
-                    "Background Auto Gain calibration produced invalid audio");
+                    "Table Auto Gain produced invalid audio during automation");
     }
 
-    // Destruction while the last coalesced job may still be running must join
-    // cleanly instead of leaving a worker touching a dead plug-in instance.
     engine.reset();
 }
 
@@ -1601,8 +1730,11 @@ void testRevisedAlgorithmContracts (TestContext& context)
         dd::DistortionEngine::Mode::downsample);
     context.expect (
         dd::DistortionEngine::formatDriveValue (
-            downsampleMode, 36.0f, sampleRate).containsIgnoreCase ("1.0 Hz"),
-        "Downsample Drive does not reach a one-Hertz sample clock");
+            downsampleMode, 18.0f, sampleRate).containsIgnoreCase ("2.0 kHz")
+            && dd::DistortionEngine::formatDriveValue (
+                downsampleMode, 36.0f, sampleRate).containsIgnoreCase (
+                    "20.0 Hz"),
+        "Downsample Drive scale does not map 50% to 2 kHz and 100% to 20 Hz");
     parameters.mode = downsampleMode;
     parameters.character = 0.0f;
     dd::DistortionEngine::Visualization rawDownsample;
@@ -1633,18 +1765,42 @@ void testRevisedAlgorithmContracts (TestContext& context)
         "Soft Full-Wave has collapsed into Full-Wave Rectifier");
 
     parameters.mode = static_cast<int> (
-        dd::DistortionEngine::Mode::halfWaveRectifier);
+        dd::DistortionEngine::Mode::sineErosion);
     parameters.character = 0.0f;
-    dd::DistortionEngine::Visualization leakyHalfWave;
+    dd::DistortionEngine::Visualization zeroHertzErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, leakyHalfWave);
+        parameters, sampleRate, zeroHertzErosion);
     parameters.character = 1.0f;
-    dd::DistortionEngine::Visualization precisionHalfWave;
+    dd::DistortionEngine::Visualization highFrequencyErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, precisionHalfWave);
+        parameters, sampleRate, highFrequencyErosion);
     context.expect (
-        visualizationDistance (leakyHalfWave, precisionHalfWave) > 0.05,
-        "Half-Wave conduction control has too little audible range");
+        visualizationDistance (
+            zeroHertzErosion, highFrequencyErosion) > 0.05,
+        "Sine Erosion Frequency has too little audible range");
+    context.expect (
+        dd::DistortionEngine::formatCharacterValue (
+            static_cast<int> (dd::DistortionEngine::Mode::sineErosion),
+            0.5f).containsIgnoreCase ("1.00 kHz")
+            && dd::DistortionEngine::formatCharacterValue (
+                static_cast<int> (
+                    dd::DistortionEngine::Mode::sineErosion),
+                1.0f).containsIgnoreCase ("10.0 kHz"),
+        "Sine Erosion Frequency scale does not map 50% to 1 kHz and 100% to 10 kHz");
+
+    parameters.character = 0.5f;
+    parameters.secondary = 0.0f;
+    dd::DistortionEngine::Visualization sineErosion;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, sineErosion);
+    parameters.secondary = 1.0f;
+    dd::DistortionEngine::Visualization pinkNoiseErosion;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, pinkNoiseErosion);
+    context.expect (
+        visualizationDistance (
+            sineErosion, pinkNoiseErosion) > 0.04,
+        "Sine Erosion Noise does not morph toward filtered pink noise");
 
     parameters.mode = static_cast<int> (
         dd::DistortionEngine::Mode::signSquare);
@@ -1660,14 +1816,16 @@ void testRevisedAlgorithmContracts (TestContext& context)
     const auto thresholdDistance = visualizationDistance (
         lowThreshold, highThreshold);
     context.expect (
-        thresholdDistance > 0.75,
-        "Sign/Square Threshold still has too little influence (distance "
+        thresholdDistance > 0.10 && thresholdDistance < 0.75,
+        "Sign/Square Threshold is not useful and bounded (distance "
             + juce::String (thresholdDistance, 3) + ")");
 
     parameters.driveDb = 18.0f;
     parameters.stages = 2;
     parameters.mode = static_cast<int> (
         dd::DistortionEngine::Mode::transformerCore);
+    parameters.secondary = dd::DistortionEngine::getDefaultSecondary (
+        parameters.mode);
     parameters.character = 0.0f;
     dd::DistortionEngine::Visualization transformerLow;
     dd::DistortionEngine::makeVisualization (
@@ -1678,10 +1836,41 @@ void testRevisedAlgorithmContracts (TestContext& context)
         parameters, sampleRate, transformerHigh);
     const auto transformerDistance =
         visualizationDistance (transformerLow, transformerHigh);
+    double transformerLowEnergy = 0.0;
+    double transformerHighEnergy = 0.0;
+    double transformerCrossEnergy = 0.0;
+    for (size_t point = 0; point < transformerLow.output.size(); ++point)
+    {
+        const auto low = static_cast<double> (
+            transformerLow.output[point]);
+        const auto high = static_cast<double> (
+            transformerHigh.output[point]);
+        transformerLowEnergy += low * low;
+        transformerHighEnergy += high * high;
+        transformerCrossEnergy += low * high;
+    }
+    const auto transformerBestScale =
+        transformerCrossEnergy
+        / juce::jmax (1.0e-12, transformerLowEnergy);
+    double transformerScaledResidual = 0.0;
+    for (size_t point = 0; point < transformerLow.output.size(); ++point)
+    {
+        const auto error =
+            static_cast<double> (transformerHigh.output[point])
+            - transformerBestScale
+                * static_cast<double> (transformerLow.output[point]);
+        transformerScaledResidual += error * error;
+    }
+    const auto transformerResidualRatio =
+        transformerScaledResidual
+        / juce::jmax (1.0e-12, transformerHighEnergy);
     context.expect (
-        transformerDistance > 0.12,
-        "Transformer Core Character still has too little influence (distance "
-            + juce::String (transformerDistance, 3) + ")");
+        transformerDistance > 0.12
+            && transformerResidualRatio > 0.015,
+        "Transformer Core still behaves like a volume control (distance "
+            + juce::String (transformerDistance, 3)
+            + ", residual "
+            + juce::String (transformerResidualRatio, 3) + ")");
 
     parameters.driveDb = 20.0f;
     parameters.stages = 4;
@@ -1730,13 +1919,953 @@ void testRevisedAlgorithmContracts (TestContext& context)
         clippedPoints < 4,
         "Phase Distortion behaves like an amplitude hard clipper");
 }
+
+void testRequestedDevelopmentFixes (TestContext& context)
+{
+    dd::Parameters parameters;
+    parameters.driveDb = 36.0f;
+    parameters.character = 0.0f;
+    parameters.stages = 1;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::morphSoftClip);
+    dd::DistortionEngine::Visualization softClip;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, softClip);
+    const auto drivenSoftPeak = *std::max_element (
+        softClip.output.begin(), softClip.output.end());
+    context.expect (
+        std::abs (drivenSoftPeak - 1.25f) < 1.0e-5f,
+        "Soft Clip visualization does not reach the graph ceiling");
+    parameters.driveDb = 0.0f;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, softClip);
+    auto upper = size_t { 1 };
+    while (upper < softClip.input.size()
+           && softClip.input[upper] < 1.0f)
+        ++upper;
+    upper = juce::jlimit (
+        size_t { 1 }, softClip.input.size() - 1, upper);
+    const auto lower = upper - 1;
+    const auto span = softClip.input[upper] - softClip.input[lower];
+    const auto fraction = (1.0f - softClip.input[lower])
+        / juce::jmax (1.0e-6f, span);
+    const auto outputAtZeroDb = softClip.output[lower]
+        + fraction * (softClip.output[upper] - softClip.output[lower]);
+    context.expect (
+        outputAtZeroDb < 1.24f
+            && std::abs (softClip.output.back() - 1.25f) < 1.0e-5f,
+        "Soft Clip visualization bends or plateaus before the graph ceiling");
+
+    parameters.driveDb = 18.0f;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::transistorFet);
+    parameters.character = -1.0f;
+    dd::DistortionEngine::Visualization closedGate;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, closedGate);
+    parameters.character = 1.0f;
+    dd::DistortionEngine::Visualization openGate;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, openGate);
+    context.expect (
+        visualizationDistance (closedGate, openGate) > 0.25,
+        "Transistor/FET Gate still has too little range");
+
+    parameters.driveDb = 24.0f;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::signSquare);
+    parameters.character = -1.0f;
+    dd::DistortionEngine::Visualization negativeThreshold;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, negativeThreshold);
+    parameters.character = 1.0f;
+    dd::DistortionEngine::Visualization positiveThreshold;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, positiveThreshold);
+    const auto signThresholdDistance = visualizationDistance (
+        negativeThreshold, positiveThreshold);
+    context.expect (
+        signThresholdDistance > 0.10 && signThresholdDistance < 0.75,
+        "Sign/Square Threshold is not useful and bounded after decoupling");
+    const auto signMinimum = *std::min_element (
+        positiveThreshold.output.begin(), positiveThreshold.output.end());
+    const auto signMaximum = *std::max_element (
+        positiveThreshold.output.begin(), positiveThreshold.output.end());
+    context.expect (
+        signMaximum - signMinimum > 1.5f,
+        "Sign/Square Threshold removes the signal at high Drive");
+
+    parameters.driveDb = 18.0f;
+    parameters.character = 1.0f;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::sineErosion);
+    parameters.character = 0.5f;
+    dd::DistortionEngine::Visualization sineErosion;
+    dd::DistortionEngine::makeVisualization (
+        parameters, sampleRate, sineErosion);
+    context.expect (
+        visualizationDistance (
+            dd::DistortionEngine::Visualization {
+                sineErosion.input,
+                sineErosion.input,
+                sineErosion.timeDomain,
+                sineErosion.spectralDomain },
+            sineErosion) > 0.05,
+        "Sine Erosion Drive does not create phase modulation");
+
+    {
+        dd::Parameters deltaView;
+        deltaView.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::deltaCrusher);
+        deltaView.driveDb = 18.0f;
+        deltaView.stages = 1;
+        deltaView.character = 0.0f;
+        dd::DistortionEngine::Visualization stepZero;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepZero);
+        deltaView.character = 0.25f;
+        dd::DistortionEngine::Visualization stepQuarter;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepQuarter);
+        deltaView.character = 0.5f;
+        dd::DistortionEngine::Visualization stepHalf;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepHalf);
+        deltaView.character = 1.0f;
+        dd::DistortionEngine::Visualization stepFull;
+        dd::DistortionEngine::makeVisualization (
+            deltaView, sampleRate, stepFull);
+        const auto zeroToQuarter =
+            visualizationDistance (stepZero, stepQuarter);
+        const auto quarterToHalf =
+            visualizationDistance (stepQuarter, stepHalf);
+        const auto halfToFull =
+            visualizationDistance (stepHalf, stepFull);
+        context.expect (
+            zeroToQuarter > 0.002
+                && quarterToHalf > 0.01
+                && halfToFull > 0.03,
+            "Delta Crusher Step still wastes the first half of its range ("
+                + juce::String (zeroToQuarter, 4) + ", "
+                + juce::String (quarterToHalf, 4) + ", "
+                + juce::String (halfToFull, 4) + ")");
+    }
+
+    {
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, blockSize, 1);
+        dd::Parameters delta;
+        delta.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::deltaCrusher);
+        delta.driveDb = 18.0f;
+        delta.character = 1.0f;
+        delta.stages = 1;
+        delta.autoGainMode = 0;
+        juce::AudioBuffer<float> buffer (1, blockSize);
+        double phase = 0.0;
+        double sum = 0.0;
+        double absoluteSum = 0.0;
+        int count = 0;
+        for (int block = 0; block < 80; ++block)
+        {
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = 0.25118864f * static_cast<float> (
+                    std::sin (phase));
+                phase += juce::MathConstants<double>::twoPi * 173.0
+                    / sampleRate;
+                buffer.setSample (0, sample, value);
+            }
+            engine.process (buffer, delta);
+            if (block < 30)
+                continue;
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                sum += value;
+                absoluteSum += std::abs (value);
+                ++count;
+            }
+        }
+        const auto mean = sum / juce::jmax (1, count);
+        const auto meanAbsolute = absoluteSum / juce::jmax (1, count);
+        context.expect (
+            meanAbsolute > 1.0e-3
+                && std::abs (mean)
+                    < 0.08 * juce::jmax (1.0e-6, meanAbsolute),
+            "Delta Crusher reconstruction has collapsed into DC");
+    }
+
+    context.expect (
+        std::abs (
+            dd::DistortionEngine::getDefaultCharacter (
+                static_cast<int> (
+                    dd::DistortionEngine::Mode::deltaCrusher))
+            - 0.5f) < 1.0e-6f,
+        "Delta Crusher Step does not default to 50%");
+
+    {
+        const std::array<std::pair<dd::DistortionEngine::Mode, float>, 7>
+            dcModes {
+                std::pair {
+                    dd::DistortionEngine::Mode::hardClip, 0.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::fullWaveRectifier, 1.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::softFullWaveRectifier, 0.7f },
+                std::pair {
+                    dd::DistortionEngine::Mode::harmonicMorph, -1.0f },
+                std::pair {
+                    dd::DistortionEngine::Mode::transistorFet, 0.7f },
+                std::pair {
+                    dd::DistortionEngine::Mode::signSquare, 0.7f },
+                std::pair {
+                    dd::DistortionEngine::Mode::triodeStage, 0.7f }
+            };
+        for (const auto [mode, character] : dcModes)
+        {
+            dd::DistortionEngine engine;
+            engine.prepare (sampleRate, blockSize, 1);
+            dd::Parameters dc;
+            dc.mode = static_cast<int> (mode);
+            dc.driveDb = 18.0f;
+            dc.character = character;
+            dc.asymmetry =
+                mode == dd::DistortionEngine::Mode::hardClip ? 0.7f : 0.0f;
+            dc.autoGainMode = 0;
+            juce::AudioBuffer<float> buffer (1, blockSize);
+            float tailPeak = 0.0f;
+            for (int block = 0; block < 120; ++block)
+            {
+                for (int sample = 0; sample < blockSize; ++sample)
+                    buffer.setSample (0, sample, 0.35f);
+                engine.process (buffer, dc);
+                if (block < 80)
+                    continue;
+                for (int sample = 0; sample < blockSize; ++sample)
+                    tailPeak = juce::jmax (
+                        tailPeak,
+                        std::abs (buffer.getSample (0, sample)));
+            }
+            context.expect (
+                tailPeak < 1.0e-3f,
+                "DC blocker is not consistently active in mode "
+                    + juce::String (
+                        static_cast<int> (mode) + 1));
+        }
+    }
+
+    {
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, blockSize, 1);
+        dd::Parameters hard;
+        hard.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::hardClip);
+        hard.driveDb = 0.0f;
+        hard.character = 0.0f;
+        hard.autoGainMode = 1;
+        hard.mix = 1.0f;
+        engine.primeAutoGain (hard);
+        juce::AudioBuffer<float> buffer (1, blockSize);
+        double phase = 0.0;
+        double energy = 0.0;
+        int count = 0;
+        auto previousOutput = 0.0f;
+        auto transitionJump = 0.0f;
+        for (int block = 0; block < 100; ++block)
+        {
+            if (block == 12)
+                hard.driveDb = 36.0f;
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                buffer.setSample (
+                    0,
+                    sample,
+                    0.25118864f * static_cast<float> (std::sin (phase)));
+                phase += juce::MathConstants<double>::twoPi * 173.0
+                    / sampleRate;
+            }
+            engine.process (buffer, hard);
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                if (block >= 12 && block < 30)
+                    transitionJump = juce::jmax (
+                        transitionJump,
+                        std::abs (value - previousOutput));
+                previousOutput = value;
+            }
+            if (block < 70)
+                continue;
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                energy += static_cast<double> (value) * value;
+                ++count;
+            }
+        }
+        const auto outputRms = std::sqrt (
+            energy / juce::jmax (1, count));
+        const auto inputRms = 0.25118864 / std::sqrt (2.0);
+        const auto errorDb = std::abs (
+            juce::Decibels::gainToDecibels (
+                static_cast<float> (outputRms / inputRms),
+                -100.0f));
+        context.expect (
+            errorDb < 0.5f,
+            "Instant Auto Gain misses a -12 dBFS Hard Clip sine by "
+                + juce::String (errorDb, 2) + " dB");
+        context.expect (
+            transitionJump < 0.12f,
+            "Predictive Auto Gain clicks or spikes while Drive moves (jump "
+                + juce::String (transitionJump, 4) + ")");
+    }
+
+    {
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, blockSize, 1);
+        dd::Parameters triode;
+        triode.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::triodeStage);
+        triode.driveDb = 18.0f;
+        triode.character = 0.0f;
+        triode.autoGainMode = 0;
+        juce::AudioBuffer<float> buffer (1, blockSize);
+        auto previous = 0.0f;
+        for (int block = 0; block < 40; ++block)
+        {
+            for (int sample = 0; sample < blockSize; ++sample)
+                buffer.setSample (0, sample, 0.2f);
+            engine.process (buffer, triode);
+            previous = buffer.getSample (0, blockSize - 1);
+        }
+
+        triode.character = 0.04f;
+        auto maximumJump = 0.0f;
+        for (int block = 0; block < 12; ++block)
+        {
+            for (int sample = 0; sample < blockSize; ++sample)
+                buffer.setSample (0, sample, 0.2f);
+            engine.process (buffer, triode);
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto current = buffer.getSample (0, sample);
+                maximumJump = juce::jmax (
+                    maximumJump, std::abs (current - previous));
+                previous = current;
+            }
+        }
+        context.expect (
+            maximumJump < 0.08f,
+            "Triode DC-block crossfade still produces a click (jump "
+                + juce::String (maximumJump, 5) + ")");
+    }
+
+    {
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, blockSize, 1);
+        dd::Parameters phaseParameters;
+        phaseParameters.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::phaseDistortion);
+        phaseParameters.driveDb = 30.0f;
+        phaseParameters.character = 0.5f;
+        phaseParameters.stages = 8;
+        phaseParameters.autoGainMode = 0;
+        juce::AudioBuffer<float> buffer (1, blockSize);
+        const auto activeSamples = juce::roundToInt (0.18 * sampleRate);
+        const auto fadeSamples = juce::roundToInt (0.006 * sampleRate);
+        const auto totalSamples = juce::roundToInt (0.75 * sampleRate);
+        const auto latency = engine.getLatencySamples();
+        auto tailPeak = 0.0f;
+        int written = 0;
+        while (written < totalSamples)
+        {
+            const auto samplesThisBlock = juce::jmin (
+                blockSize, totalSamples - written);
+            buffer.setSize (1, samplesThisBlock, false, false, true);
+            for (int sample = 0; sample < samplesThisBlock; ++sample)
+            {
+                const auto position = written + sample;
+                auto envelope = 1.0f;
+                if (position >= activeSamples - fadeSamples)
+                    envelope = position < activeSamples
+                        ? static_cast<float> (activeSamples - position)
+                            / static_cast<float> (fadeSamples)
+                        : 0.0f;
+                const auto input = 0.22f * envelope * static_cast<float> (
+                    std::sin (
+                        juce::MathConstants<double>::twoPi * 220.0
+                        * static_cast<double> (position) / sampleRate));
+                buffer.setSample (0, sample, input);
+            }
+            engine.process (buffer, phaseParameters);
+            for (int sample = 0; sample < samplesThisBlock; ++sample)
+            {
+                const auto position = written + sample;
+                if (position > activeSamples + latency
+                        + juce::roundToInt (0.09 * sampleRate))
+                    tailPeak = juce::jmax (
+                        tailPeak, std::abs (buffer.getSample (0, sample)));
+            }
+            written += samplesThisBlock;
+        }
+        context.expect (
+            tailPeak < 1.0e-4f,
+            "Phase Distortion leaves a delayed click after release");
+    }
+}
+
+std::vector<float> renderSecondaryVariant (dd::Parameters parameters)
+{
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    std::vector<float> result;
+    double phase = 0.0;
+    for (int block = 0; block < 28; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto time = phase++ / sampleRate;
+            buffer.setSample (0, sample, static_cast<float> (
+                0.42 * std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0 * time)
+                + 0.11 * std::sin (
+                    juce::MathConstants<double>::twoPi * 1753.0 * time)));
+        }
+        engine.process (buffer, parameters);
+        if (block >= 20)
+            result.insert (
+                result.end(),
+                buffer.getReadPointer (0),
+                buffer.getReadPointer (0) + blockSize);
+    }
+    return result;
+}
+
+double normalisedRenderDistance (const std::vector<float>& first,
+                                 const std::vector<float>& second)
+{
+    double differenceEnergy = 0.0;
+    double referenceEnergy = 0.0;
+    for (size_t index = 0; index < juce::jmin (first.size(), second.size()); ++index)
+    {
+        const auto difference = static_cast<double> (first[index] - second[index]);
+        differenceEnergy += difference * difference;
+        referenceEnergy += static_cast<double> (first[index]) * first[index];
+    }
+    return std::sqrt (
+        differenceEnergy / juce::jmax (1.0e-12, referenceEnergy));
+}
+
+void testSecondaryToneControlsAndSineRelease (TestContext& context)
+{
+    dd::Parameters parameters;
+    parameters.driveDb = 24.0f;
+    parameters.character = 0.72f;
+    parameters.stages = 2;
+    parameters.autoGainMode = 0;
+
+    const auto expectSecondaryChange = [&] (
+        dd::DistortionEngine::Mode mode,
+        auto setMinimum,
+        auto setMaximum,
+        const juce::String& name)
+    {
+        parameters.mode = static_cast<int> (mode);
+        auto minimum = parameters;
+        auto maximum = parameters;
+        setMinimum (minimum);
+        setMaximum (maximum);
+        const auto distance = normalisedRenderDistance (
+            renderSecondaryVariant (minimum),
+            renderSecondaryVariant (maximum));
+        context.expect (
+            std::isfinite (distance) && distance > 0.025,
+            name + " secondary slider has too little audible effect ("
+                + juce::String (distance, 4) + ")");
+    };
+
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::tapeHysteresis,
+        [] (dd::Parameters& p) { p.secondary = 0.5f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Tape Bias");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::transformerCore,
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Transformer Air Gap");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::downsample,
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Downsample Jitter");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::bitCrusher,
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Bit Crusher Dither");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::schmittHysteresis,
+        [] (dd::Parameters& p) { p.secondary = 0.0f; },
+        [] (dd::Parameters& p) { p.secondary = 1.0f; },
+        "Schmitt Slew");
+
+    dd::Parameters schmittViewParameters;
+    schmittViewParameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::schmittHysteresis);
+    schmittViewParameters.driveDb = 24.0f;
+    schmittViewParameters.character = 0.65f;
+    dd::DistortionEngine::Visualization schmittWithoutSlew;
+    dd::DistortionEngine::makeVisualization (
+        schmittViewParameters, sampleRate, schmittWithoutSlew);
+    schmittViewParameters.secondary = 1.0f;
+    dd::DistortionEngine::Visualization schmittWithSlew;
+    dd::DistortionEngine::makeVisualization (
+        schmittViewParameters, sampleRate, schmittWithSlew);
+    context.expect (
+        ! schmittWithoutSlew.timeDomain
+            && ! schmittWithSlew.timeDomain
+            && ! schmittWithoutSlew.spectralDomain
+            && ! schmittWithSlew.spectralDomain,
+        "Schmitt Hysteresis visualization changes domain when Slew moves");
+
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+    dd::Parameters sine;
+    sine.mode = static_cast<int> (dd::DistortionEngine::Mode::sineErosion);
+    sine.driveDb = 36.0f;
+    sine.character = 0.35f;
+    sine.stages = 4;
+    sine.autoGainMode = 0;
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    double phase = 0.0;
+    float previous = 0.0f;
+    auto steadyMaximumJump = 0.0f;
+    for (int block = 0; block < 20; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 55.0
+                    * phase++ / sampleRate));
+            buffer.setSample (0, sample, value);
+        }
+        engine.process (buffer, sine);
+        if (block >= 16)
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                steadyMaximumJump = juce::jmax (
+                    steadyMaximumJump, std::abs (value - previous));
+                previous = value;
+            }
+        previous = buffer.getSample (0, blockSize - 1);
+    }
+
+    sine.driveDb = 0.0f;
+    auto maximumJump = 0.0f;
+    for (int block = 0; block < 8; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+            buffer.setSample (0, sample, 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 55.0
+                    * phase++ / sampleRate)));
+        engine.process (buffer, sine);
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = buffer.getSample (0, sample);
+            maximumJump = juce::jmax (maximumJump, std::abs (value - previous));
+            previous = value;
+        }
+    }
+    context.expect (
+        maximumJump <= steadyMaximumJump * 1.15f + 0.01f,
+        "Sine Erosion Drive release clicks (maximum adjacent jump "
+            + juce::String (maximumJump, 4)
+            + ", steady-state maximum "
+            + juce::String (steadyMaximumJump, 4) + ")");
+}
+
+void testSharedSecondaryContract (TestContext& context)
+{
+    const std::array<std::pair<dd::DistortionEngine::Mode, juce::String>, 6>
+        controls {
+            std::pair { dd::DistortionEngine::Mode::sineErosion, "NOISE" },
+            std::pair { dd::DistortionEngine::Mode::tapeHysteresis, "BIAS" },
+            std::pair { dd::DistortionEngine::Mode::transformerCore, "AIR GAP" },
+            std::pair { dd::DistortionEngine::Mode::downsample, "JITTER" },
+            std::pair { dd::DistortionEngine::Mode::bitCrusher, "DITHER" },
+            std::pair { dd::DistortionEngine::Mode::schmittHysteresis, "SLEW" }
+        };
+
+    for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
+    {
+        const auto match = std::find_if (
+            controls.begin(), controls.end(),
+            [mode] (const auto& control)
+            {
+                return static_cast<int> (control.first) == mode;
+            });
+        const auto expected = match != controls.end();
+        context.expect (
+            dd::DistortionEngine::hasSecondaryControl (mode) == expected,
+            "Shared Secondary visibility is wrong for mode "
+                + juce::String (mode + 1));
+        context.expect (
+            dd::DistortionEngine::getSecondaryName (mode)
+                == (expected ? match->second : juce::String {}),
+            "Shared Secondary label is wrong for mode "
+                + juce::String (mode + 1));
+    }
+
+    context.expect (
+        std::abs (dd::DistortionEngine::getDefaultSecondary (
+            static_cast<int> (
+                dd::DistortionEngine::Mode::tapeHysteresis)) - 0.5f)
+            < 1.0e-6f,
+        "Tape Bias does not reset Shared Secondary to 50%");
+    for (const auto& control : controls)
+        if (control.first != dd::DistortionEngine::Mode::tapeHysteresis)
+            context.expect (
+                std::abs (dd::DistortionEngine::getDefaultSecondary (
+                    static_cast<int> (control.first))) < 1.0e-6f,
+                control.second + " does not reset Shared Secondary to 0%");
+}
 } // namespace
+
+static void dumpAutoGainTable()
+{
+    constexpr std::array<double, 4> rates {
+        44100.0, 48000.0, 96000.0, 192000.0
+    };
+    constexpr std::array<float, 5> drives {
+        0.0f, 9.0f, 18.0f, 27.0f, 36.0f
+    };
+    constexpr std::array<float, 7> characters {
+        -1.0f, -0.5f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+    constexpr std::array<float, 3> asymmetries {
+        -1.0f, 0.0f, 1.0f
+    };
+
+    std::cout
+        << "#pragma once\n\n"
+        << "#include <array>\n\n"
+        << "namespace dd::auto_gain_table\n{\n"
+        << "inline constexpr std::array<double, 4> sampleRates { "
+        << "44100.0, 48000.0, 96000.0, 192000.0 };\n"
+        << "inline constexpr std::array<float, 5> drives { "
+        << "0.0f, 9.0f, 18.0f, 27.0f, 36.0f };\n"
+        << "inline constexpr std::array<float, 7> characters { "
+        << "-1.0f, -0.5f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, 3> asymmetries { "
+        << "-1.0f, 0.0f, 1.0f };\n"
+        << "inline constexpr std::array<float, "
+        << dd::DistortionEngine::modeCount * rates.size()
+            * dd::DistortionEngine::maximumStages * asymmetries.size()
+            * characters.size() * drives.size()
+        << "> gains {\n";
+
+    std::cout << std::showpoint << std::setprecision (9);
+    int valuesOnLine = 0;
+    for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
+        for (const auto rate : rates)
+            for (int stages = 1;
+                 stages <= dd::DistortionEngine::maximumStages;
+                 ++stages)
+                for (const auto asymmetry : asymmetries)
+                    for (const auto character : characters)
+                        for (const auto drive : drives)
+                        {
+                            dd::Parameters parameters;
+                            parameters.mode = mode;
+                            parameters.driveDb = drive;
+                            parameters.character = character;
+                            parameters.asymmetry = asymmetry;
+                            parameters.stages = stages;
+                            const auto gain =
+                                dd::DistortionEngine::calculateReferenceAutoGain (
+                                    parameters, rate);
+                            if (valuesOnLine == 0)
+                                std::cout << "    ";
+                            std::cout << gain << "f,";
+                            ++valuesOnLine;
+                            if (valuesOnLine >= 8)
+                            {
+                                std::cout << '\n';
+                                valuesOnLine = 0;
+                            }
+                            else
+                            {
+                                std::cout << ' ';
+                            }
+                        }
+    if (valuesOnLine != 0)
+        std::cout << '\n';
+    std::cout << "};\n} // namespace dd::auto_gain_table\n";
+}
+
+static void dumpSpectralAutoGainTable()
+{
+    constexpr std::array<float, 13> drives {
+        0.0f, 3.0f, 6.0f, 9.0f, 12.0f, 15.0f, 18.0f,
+        21.0f, 24.0f, 27.0f, 30.0f, 33.0f, 36.0f
+    };
+    constexpr std::array<float, 9> characters {
+        0.0f, 0.125f, 0.25f, 0.375f, 0.5f,
+        0.625f, 0.75f, 0.875f, 1.0f
+    };
+    std::cout
+        << "#pragma once\n\n"
+        << "#include <array>\n\n"
+        << "namespace dd::spectral_auto_gain_table\n{\n"
+        << "inline constexpr std::array<float, 13> drives { "
+        << "0.0f, 3.0f, 6.0f, 9.0f, 12.0f, 15.0f, 18.0f, "
+        << "21.0f, 24.0f, 27.0f, 30.0f, 33.0f, 36.0f };\n"
+        << "inline constexpr std::array<float, 9> characters { "
+        << "0.0f, 0.125f, 0.25f, 0.375f, 0.5f, "
+        << "0.625f, 0.75f, 0.875f, 1.0f };\n"
+        << "inline constexpr std::array<float, "
+        << dd::DistortionEngine::maximumStages
+            * drives.size() * characters.size()
+        << "> gains {\n"
+        << std::showpoint << std::setprecision (9);
+
+    int valuesOnLine = 0;
+    for (int stages = 1;
+         stages <= dd::DistortionEngine::maximumStages;
+         ++stages)
+        for (const auto character : characters)
+            for (const auto drive : drives)
+            {
+                dd::Parameters parameters;
+                parameters.mode = static_cast<int> (
+                    dd::DistortionEngine::Mode::spectralClip);
+                parameters.driveDb = drive;
+                parameters.character = character;
+                parameters.stages = stages;
+                const auto gain =
+                    dd::DistortionEngine::calculateReferenceAutoGain (
+                        parameters, sampleRate);
+                if (valuesOnLine == 0)
+                    std::cout << "    ";
+                std::cout << gain << "f,";
+                ++valuesOnLine;
+                if (valuesOnLine >= 8)
+                {
+                    std::cout << '\n';
+                    valuesOnLine = 0;
+                }
+                else
+                {
+                    std::cout << ' ';
+                }
+            }
+    if (valuesOnLine != 0)
+        std::cout << '\n';
+    std::cout << "};\n} // namespace dd::spectral_auto_gain_table\n";
+}
+
+static void dumpSineErosionAutoGainTable()
+{
+    constexpr std::array<double, 4> rates {
+        44100.0, 48000.0, 96000.0, 192000.0
+    };
+    constexpr std::array<float, 5> drives {
+        0.0f, 9.0f, 18.0f, 27.0f, 36.0f
+    };
+    constexpr std::array<float, 5> characters {
+        0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+    constexpr std::array<float, 5> secondaryValues {
+        0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+    constexpr std::array<float, 3> asymmetries {
+        -1.0f, 0.0f, 1.0f
+    };
+
+    std::cout
+        << "#pragma once\n\n"
+        << "#include <array>\n\n"
+        << "namespace dd::sine_erosion_auto_gain_table\n{\n"
+        << "inline constexpr std::array<double, 4> sampleRates { "
+        << "44100.0, 48000.0, 96000.0, 192000.0 };\n"
+        << "inline constexpr std::array<float, 5> drives { "
+        << "0.0f, 9.0f, 18.0f, 27.0f, 36.0f };\n"
+        << "inline constexpr std::array<float, 5> characters { "
+        << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, 5> secondaryValues { "
+        << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, 3> asymmetries { "
+        << "-1.0f, 0.0f, 1.0f };\n"
+        << "inline constexpr std::array<float, "
+        << rates.size() * dd::DistortionEngine::maximumStages
+            * asymmetries.size() * characters.size()
+            * secondaryValues.size() * drives.size()
+        << "> gains {\n"
+        << std::showpoint << std::setprecision (9);
+
+    int valuesOnLine = 0;
+    for (const auto rate : rates)
+        for (int stages = 1;
+             stages <= dd::DistortionEngine::maximumStages;
+             ++stages)
+            for (const auto asymmetry : asymmetries)
+                for (const auto character : characters)
+                    for (const auto secondary : secondaryValues)
+                        for (const auto drive : drives)
+                        {
+                            dd::Parameters parameters;
+                            parameters.mode = static_cast<int> (
+                                dd::DistortionEngine::Mode::sineErosion);
+                            parameters.driveDb = drive;
+                            parameters.character = character;
+                            parameters.secondary = secondary;
+                            parameters.asymmetry = asymmetry;
+                            parameters.stages = stages;
+                            const auto gain =
+                                dd::DistortionEngine::calculateReferenceAutoGain (
+                                    parameters, rate);
+                            if (valuesOnLine == 0)
+                                std::cout << "    ";
+                            std::cout << gain << "f,";
+                            ++valuesOnLine;
+                            if (valuesOnLine >= 8)
+                            {
+                                std::cout << '\n';
+                                valuesOnLine = 0;
+                            }
+                            else
+                            {
+                                std::cout << ' ';
+                            }
+                        }
+    if (valuesOnLine != 0)
+        std::cout << '\n';
+    std::cout << "};\n} // namespace dd::sine_erosion_auto_gain_table\n";
+}
+
+static void dumpSecondaryAutoGainTable()
+{
+    constexpr std::array<int, 5> modes {
+        static_cast<int> (dd::DistortionEngine::Mode::tapeHysteresis),
+        static_cast<int> (dd::DistortionEngine::Mode::transformerCore),
+        static_cast<int> (dd::DistortionEngine::Mode::downsample),
+        static_cast<int> (dd::DistortionEngine::Mode::bitCrusher),
+        static_cast<int> (dd::DistortionEngine::Mode::schmittHysteresis)
+    };
+    constexpr std::array<double, 4> rates {
+        44100.0, 48000.0, 96000.0, 192000.0
+    };
+    constexpr std::array<float, 5> drives {
+        0.0f, 9.0f, 18.0f, 27.0f, 36.0f
+    };
+    constexpr std::array<float, 5> characters {
+        0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+    constexpr std::array<float, 7> asymmetries {
+        -1.0f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 1.0f
+    };
+    constexpr std::array<float, 5> secondaryValues {
+        0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+
+    std::cout
+        << "#pragma once\n\n"
+        << "#include <array>\n\n"
+        << "namespace dd::secondary_auto_gain_table\n{\n"
+        << "inline constexpr std::array<int, 5> modes { "
+        << "5, 13, 21, 22, 26 };\n"
+        << "inline constexpr std::array<double, 4> sampleRates { "
+        << "44100.0, 48000.0, 96000.0, 192000.0 };\n"
+        << "inline constexpr std::array<float, 5> drives { "
+        << "0.0f, 9.0f, 18.0f, 27.0f, 36.0f };\n"
+        << "inline constexpr std::array<float, 5> characters { "
+        << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, 7> asymmetries { "
+        << "-1.0f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 1.0f };\n"
+        << "inline constexpr std::array<float, 5> secondaryValues { "
+        << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, "
+        << modes.size() * rates.size()
+            * dd::DistortionEngine::maximumStages
+            * asymmetries.size() * characters.size()
+            * secondaryValues.size() * drives.size()
+        << "> gains {\n"
+        << std::showpoint << std::setprecision (9);
+
+    int valuesOnLine = 0;
+    for (const auto mode : modes)
+        for (const auto rate : rates)
+            for (int stages = 1;
+                 stages <= dd::DistortionEngine::maximumStages;
+                 ++stages)
+                for (const auto asymmetry : asymmetries)
+                    for (const auto character : characters)
+                        for (const auto secondary : secondaryValues)
+                            for (const auto drive : drives)
+                            {
+                                dd::Parameters parameters;
+                                parameters.mode = mode;
+                                parameters.driveDb = drive;
+                                parameters.character = character;
+                                parameters.asymmetry = asymmetry;
+                                parameters.stages = stages;
+                                parameters.secondary = secondary;
+                                const auto gain =
+                                    dd::DistortionEngine::calculateReferenceAutoGain (
+                                        parameters, rate);
+                                if (valuesOnLine == 0)
+                                    std::cout << "    ";
+                                std::cout << gain << "f,";
+                                ++valuesOnLine;
+                                if (valuesOnLine >= 8)
+                                {
+                                    std::cout << '\n';
+                                    valuesOnLine = 0;
+                                }
+                                else
+                                {
+                                    std::cout << ' ';
+                                }
+                            }
+    if (valuesOnLine != 0)
+        std::cout << '\n';
+    std::cout << "};\n} // namespace dd::secondary_auto_gain_table\n";
+}
 
 int main (int argc, char** argv)
 {
     if (argc > 1 && juce::String (argv[1]) == "--dump-regression")
     {
         dumpRegressionFingerprints();
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1]) == "--dump-auto-gain-table")
+    {
+        dumpAutoGainTable();
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1])
+            == "--dump-spectral-auto-gain-table")
+    {
+        dumpSpectralAutoGainTable();
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1])
+            == "--dump-sine-erosion-auto-gain-table")
+    {
+        dumpSineErosionAutoGainTable();
+        return 0;
+    }
+    if (argc > 1 && juce::String (argv[1])
+            == "--dump-secondary-auto-gain-table")
+    {
+        dumpSecondaryAutoGainTable();
         return 0;
     }
 
@@ -1753,6 +2882,8 @@ int main (int argc, char** argv)
     testOversamplingPaths (context);
     testAutoGainForEveryMode (context);
     testSpectralClipAutoGain (context);
+    testSineErosionNoiseAutoGain (context);
+    testSecondaryControlAutoGain (context);
     testEveryCharacterHasARealVisualization (context);
     testDownsampleExtreme (context);
     testModesArePairwiseDistinct (context);
@@ -1765,8 +2896,11 @@ int main (int argc, char** argv)
     testStereoAsymmetryUsesOppositePolarities (context);
     testNewTopologyAndSafetyInvariants (context);
     testRevisedAlgorithmContracts (context);
+    testRequestedDevelopmentFixes (context);
+    testSecondaryToneControlsAndSineRelease (context);
+    testSharedSecondaryContract (context);
     testOutputCeilingAtZeroDb (context);
-    testRealtimeGainCalibrationWorker (context);
+    testInstantTableAutoGain (context);
 
     if (context.failures == 0)
     {

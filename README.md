@@ -35,12 +35,12 @@ under their GPL-compatible licences.
 7. Harmonic Morph
 8. Phase Distortion
 9. Spectral Clip
-10. Sign / Square
-11. Zero-Square
-12. Full-Wave Rectifier
-13. Soft Full-Wave
-14. Transformer Core
-15. Half-Wave Rectifier
+10. Sine Erosion
+11. Sign / Square
+12. Zero-Square
+13. Full-Wave Rectifier
+14. Soft Full-Wave
+15. Transformer Core
 16. Class-B Saturation
 17. Topology Fold
 18. Recursive Foldback
@@ -56,6 +56,16 @@ under their GPL-compatible licences.
 28. Feedback Saturator
 29. Resonant Feedback Clip
 30. Dynamic Sag
+
+Sine Erosion adds a secondary Noise control that morphs its delay modulator
+from a sine oscillator to band-pass-filtered pink noise. Character controls
+the oscillator or filter centre frequency on a 0 Hz to 10 kHz nonlinear scale.
+
+Five other algorithms expose the same compact secondary slider when selected:
+Tape Hysteresis — Bias, Transformer Core — Air Gap, Downsample — Jitter,
+Bit Crusher — Dither, and Schmitt Hysteresis — Slew. They all share one
+automatable `Secondary` parameter; the on-screen label and factory value follow
+the selected algorithm.
 
 ## Build
 

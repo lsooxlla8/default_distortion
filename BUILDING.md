@@ -65,6 +65,46 @@ ctest --test-dir build -C Release --output-on-failure
 WebKit and Curl are deliberately disabled because the plug-in does not use a
 web browser or networking.
 
+## Auto Gain reference tables
+
+Ordinary Auto Gain is entirely predictive: it reads the generated lookup
+tables from the current smoothed DSP parameters and linearly reaches the new
+coefficient within the same audio block. It never measures or follows the
+programme RMS; that behaviour belongs exclusively to Smart Auto Gain.
+The deterministic reference signal is a -12 dBFS peak sine, so regeneration
+is repeatable and independent of whatever audio happens to be playing.
+**Every change to a distortion algorithm, its
+Drive/Character/Asymmetry mapping, stage behaviour, DC filtering, or reference
+calibration must regenerate and commit all four tables.**
+
+Build the test generator first, then regenerate the main table, the dense
+Spectral Clip table, the Sine Erosion table with its additional Secondary axis,
+and the focused table for algorithm-specific secondary controls:
+
+```sh
+cmake --build build --config Release --target DefaultDistortionTests --parallel
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-auto-gain-table > Source/AutoGainTable.h
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-spectral-auto-gain-table > Source/SpectralAutoGainTable.h
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-sine-erosion-auto-gain-table > Source/SineErosionAutoGainTable.h
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-secondary-auto-gain-table > Source/SecondaryAutoGainTable.h
+cmake --build build --config Release --target DefaultDistortionTests --parallel
+ctest --test-dir build -C Release --output-on-failure
+```
+
+`Tests/DspTests.cpp` is the authoritative generator. The main table covers all
+30 internal mode IDs at four sample rates, all eight stage counts, and a grid
+across Drive, Character, and Asymmetry. Spectral Clip has a denser dedicated
+table because its makeup curve changes more sharply between the main grid
+points. Sine Erosion has a dedicated table so Secondary can be calibrated without
+needlessly multiplying every other mode's table by that extra dimension.
+The secondary-control table covers Tape Bias, Transformer Air Gap, Downsample
+Jitter, Bit Crusher Dither, and Schmitt Slew without adding a redundant axis
+to the other 25 modes.
+
 ## GitHub Actions and releases
 
 `.github/workflows/build-and-release.yml` builds and tests:
