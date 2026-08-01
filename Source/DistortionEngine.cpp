@@ -2437,8 +2437,21 @@ float DistortionEngine::downsampleTargetRate (float amountNormalised,
 {
     const auto amount = unipolarCharacter (amountNormalised);
     const auto safeRate = static_cast<float> (juce::jmax (1.0, hostSampleRate));
-    const auto target = safeRate * std::pow (1.0f / safeRate, amount);
-    return juce::jmax (1.0f, target);
+    const auto middleRate = juce::jmin (2000.0f, safeRate);
+    const auto minimumRate = juce::jmin (20.0f, middleRate);
+    const auto logStart = std::log (safeRate);
+    const auto logMiddle = std::log (middleRate);
+    const auto logEnd = std::log (minimumRate);
+
+    // A quadratic curve in log-frequency space passes through all three
+    // perceptual anchors without a slope discontinuity at the midpoint.
+    const auto middleDelta = logMiddle - logStart;
+    const auto endDelta = logEnd - logStart;
+    const auto linear = 4.0f * middleDelta - endDelta;
+    const auto quadratic = 2.0f * endDelta - 4.0f * middleDelta;
+    const auto target = std::exp (
+        logStart + linear * amount + quadratic * amount * amount);
+    return juce::jlimit (minimumRate, safeRate, target);
 }
 
 bool DistortionEngine::usesLegacyDrivePath (Mode mode) noexcept

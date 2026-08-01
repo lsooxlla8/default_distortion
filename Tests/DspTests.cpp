@@ -908,13 +908,20 @@ void testEveryCharacterHasARealVisualization (TestContext& context)
 
 void testDownsampleExtreme (TestContext& context)
 {
-    const auto text = dd::DistortionEngine::formatDriveValue (
+    const auto midpointText = dd::DistortionEngine::formatDriveValue (
+        static_cast<int> (dd::DistortionEngine::Mode::downsample),
+        18.0f,
+        sampleRate);
+    const auto maximumText = dd::DistortionEngine::formatDriveValue (
         static_cast<int> (dd::DistortionEngine::Mode::downsample),
         36.0f,
         sampleRate);
     context.expect (
-        text.containsIgnoreCase ("1.0 Hz"),
-        "Downsample maximum does not reach a one-Hertz sample clock");
+        midpointText.containsIgnoreCase ("2.0 kHz"),
+        "Downsample midpoint does not reach a two-kilohertz sample clock");
+    context.expect (
+        maximumText.containsIgnoreCase ("20.0 Hz"),
+        "Downsample maximum does not reach a twenty-Hertz sample clock");
 }
 
 std::vector<double> buildModeSignature (int mode)
@@ -1723,8 +1730,11 @@ void testRevisedAlgorithmContracts (TestContext& context)
         dd::DistortionEngine::Mode::downsample);
     context.expect (
         dd::DistortionEngine::formatDriveValue (
-            downsampleMode, 36.0f, sampleRate).containsIgnoreCase ("1.0 Hz"),
-        "Downsample Drive does not reach a one-Hertz sample clock");
+            downsampleMode, 18.0f, sampleRate).containsIgnoreCase ("2.0 kHz")
+            && dd::DistortionEngine::formatDriveValue (
+                downsampleMode, 36.0f, sampleRate).containsIgnoreCase (
+                    "20.0 Hz"),
+        "Downsample Drive scale does not map 50% to 2 kHz and 100% to 20 Hz");
     parameters.mode = downsampleMode;
     parameters.character = 0.0f;
     dd::DistortionEngine::Visualization rawDownsample;
