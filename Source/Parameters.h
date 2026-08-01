@@ -9,7 +9,7 @@ namespace ParamIDs
 inline constexpr auto mode = "mode";
 inline constexpr auto drive = "drive";
 inline constexpr auto character = "character";
-inline constexpr auto wave = "wave";
+inline constexpr auto noise = "noise";
 inline constexpr auto tapeBias = "tapeBias";
 inline constexpr auto transformerAirGap = "transformerAirGap";
 inline constexpr auto downsampleJitter = "downsampleJitter";
@@ -30,7 +30,7 @@ struct Parameters
     int mode = 0;
     float driveDb = 0.0f;
     float character = 0.0f;
-    float wave = 0.0f;
+    float noise = 0.0f;
     float tapeBias = 0.5f;
     float transformerAirGap = 0.0f;
     float downsampleJitter = 0.0f;

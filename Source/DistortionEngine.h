@@ -343,7 +343,7 @@ private:
 
     float smoothedDriveDb = 0.0f;
     float smoothedCharacter = 0.0f;
-    float smoothedWave = 0.0f;
+    float smoothedNoise = 0.0f;
     float smoothedTapeBias = 0.5f;
     float smoothedTransformerAirGap = 0.0f;
     float smoothedDownsampleJitter = 0.0f;

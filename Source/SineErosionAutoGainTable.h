@@ -7,7 +7,7 @@ namespace dd::sine_erosion_auto_gain_table
 inline constexpr std::array<double, 4> sampleRates { 44100.0, 48000.0, 96000.0, 192000.0 };
 inline constexpr std::array<float, 5> drives { 0.0f, 9.0f, 18.0f, 27.0f, 36.0f };
 inline constexpr std::array<float, 5> characters { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
-inline constexpr std::array<float, 5> waves { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+inline constexpr std::array<float, 5> noiseAmounts { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
 inline constexpr std::array<float, 3> asymmetries { -1.0f, 0.0f, 1.0f };
 inline constexpr std::array<float, 12000> gains {
     0.954948127f, 0.954948127f, 0.954948127f, 0.954948127f, 0.954948127f, 0.954948127f, 0.954948127f, 0.954948127f,

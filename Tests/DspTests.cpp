@@ -659,7 +659,7 @@ void testOversamplingPaths (TestContext& context)
     }
 }
 
-double measureModeRms (int mode, bool autoGain, float mix, float wave = 0.0f)
+double measureModeRms (int mode, bool autoGain, float mix, float noise = 0.0f)
 {
     dd::DistortionEngine engine;
     engine.prepare (sampleRate, blockSize, 2);
@@ -670,7 +670,7 @@ double measureModeRms (int mode, bool autoGain, float mix, float wave = 0.0f)
     parameters.character =
         dd::DistortionEngine::isCharacterBipolar (mode) ? 0.35f : 0.70f;
     parameters.asymmetry = 0.12f;
-    parameters.wave = wave;
+    parameters.noise = noise;
     parameters.stages = 2;
     parameters.mix = mix;
     parameters.outputDb = 0.0f;
@@ -797,7 +797,7 @@ void testSpectralClipAutoGain (TestContext& context)
         "Spectral Clip deterministic Auto Gain does not improve level matching");
 }
 
-void testSineErosionWaveAutoGain (TestContext& context)
+void testSineErosionNoiseAutoGain (TestContext& context)
 {
     const auto mode = static_cast<int> (
         dd::DistortionEngine::Mode::sineErosion);
@@ -807,7 +807,7 @@ void testSineErosionWaveAutoGain (TestContext& context)
         static_cast<float> (compensated / dry), -100.0f));
     context.expect (
         std::isfinite (compensated) && errorDb <= 1.0f,
-        "Sine Erosion Wave-aware Auto Gain misses the dry reference by "
+        "Sine Erosion Noise-aware Auto Gain misses the dry reference by "
             + juce::String (errorDb, 2) + " dB");
 }
 
@@ -1777,18 +1777,18 @@ void testRevisedAlgorithmContracts (TestContext& context)
         "Sine Erosion Frequency scale does not map 50% to 1 kHz and 100% to 10 kHz");
 
     parameters.character = 0.5f;
-    parameters.wave = 0.0f;
-    dd::DistortionEngine::Visualization sineWaveErosion;
+    parameters.noise = 0.0f;
+    dd::DistortionEngine::Visualization sineErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, sineWaveErosion);
-    parameters.wave = 1.0f;
-    dd::DistortionEngine::Visualization pinkWaveErosion;
+        parameters, sampleRate, sineErosion);
+    parameters.noise = 1.0f;
+    dd::DistortionEngine::Visualization pinkNoiseErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, pinkWaveErosion);
+        parameters, sampleRate, pinkNoiseErosion);
     context.expect (
         visualizationDistance (
-            sineWaveErosion, pinkWaveErosion) > 0.04,
-        "Sine Erosion Wave does not morph toward filtered pink noise");
+            sineErosion, pinkNoiseErosion) > 0.04,
+        "Sine Erosion Noise does not morph toward filtered pink noise");
 
     parameters.mode = static_cast<int> (
         dd::DistortionEngine::Mode::signSquare);
@@ -2621,7 +2621,7 @@ static void dumpSineErosionAutoGainTable()
     constexpr std::array<float, 5> characters {
         0.0f, 0.25f, 0.5f, 0.75f, 1.0f
     };
-    constexpr std::array<float, 5> waves {
+    constexpr std::array<float, 5> noiseAmounts {
         0.0f, 0.25f, 0.5f, 0.75f, 1.0f
     };
     constexpr std::array<float, 3> asymmetries {
@@ -2638,14 +2638,14 @@ static void dumpSineErosionAutoGainTable()
         << "0.0f, 9.0f, 18.0f, 27.0f, 36.0f };\n"
         << "inline constexpr std::array<float, 5> characters { "
         << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
-        << "inline constexpr std::array<float, 5> waves { "
+        << "inline constexpr std::array<float, 5> noiseAmounts { "
         << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
         << "inline constexpr std::array<float, 3> asymmetries { "
         << "-1.0f, 0.0f, 1.0f };\n"
         << "inline constexpr std::array<float, "
         << rates.size() * dd::DistortionEngine::maximumStages
             * asymmetries.size() * characters.size()
-            * waves.size() * drives.size()
+            * noiseAmounts.size() * drives.size()
         << "> gains {\n"
         << std::showpoint << std::setprecision (9);
 
@@ -2656,7 +2656,7 @@ static void dumpSineErosionAutoGainTable()
              ++stages)
             for (const auto asymmetry : asymmetries)
                 for (const auto character : characters)
-                    for (const auto wave : waves)
+                    for (const auto noise : noiseAmounts)
                         for (const auto drive : drives)
                         {
                             dd::Parameters parameters;
@@ -2664,7 +2664,7 @@ static void dumpSineErosionAutoGainTable()
                                 dd::DistortionEngine::Mode::sineErosion);
                             parameters.driveDb = drive;
                             parameters.character = character;
-                            parameters.wave = wave;
+                            parameters.noise = noise;
                             parameters.asymmetry = asymmetry;
                             parameters.stages = stages;
                             const auto gain =
@@ -2835,7 +2835,7 @@ int main (int argc, char** argv)
     testOversamplingPaths (context);
     testAutoGainForEveryMode (context);
     testSpectralClipAutoGain (context);
-    testSineErosionWaveAutoGain (context);
+    testSineErosionNoiseAutoGain (context);
     testSecondaryControlAutoGain (context);
     testEveryCharacterHasARealVisualization (context);
     testDownsampleExtreme (context);

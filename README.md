@@ -57,7 +57,7 @@ under their GPL-compatible licences.
 29. Resonant Feedback Clip
 30. Dynamic Sag
 
-Sine Erosion adds a secondary Wave control that morphs its delay modulator
+Sine Erosion adds a secondary Noise control that morphs its delay modulator
 from a sine oscillator to band-pass-filtered pink noise. Character controls
 the oscillator or filter centre frequency on a 0 Hz to 10 kHz nonlinear scale.
 

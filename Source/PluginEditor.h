@@ -184,7 +184,7 @@ private:
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
     VerticalTextButton asymStereoButton;
-    VerticalTextSlider waveSlider { "NOISE", "N O I S E", 0.0 };
+    VerticalTextSlider noiseSlider { "NOISE", "N O I S E", 0.0 };
     VerticalTextSlider tapeBiasSlider { "BIAS", "B I A S", 0.5 };
     VerticalTextSlider airGapSlider { "AIR GAP", "A I R  G A P", 0.0 };
     VerticalTextSlider jitterSlider { "JITTER", "J I T T E R", 0.0 };
@@ -202,7 +202,7 @@ private:
     ResponseDisplay responseDisplay;
 
     std::unique_ptr<SliderAttachment> driveAttachment;
-    std::unique_ptr<SliderAttachment> waveAttachment;
+    std::unique_ptr<SliderAttachment> noiseAttachment;
     std::unique_ptr<SliderAttachment> tapeBiasAttachment;
     std::unique_ptr<SliderAttachment> airGapAttachment;
     std::unique_ptr<SliderAttachment> jitterAttachment;

@@ -103,7 +103,7 @@ float secondaryParameterForMode (
     const Parameters& parameters) noexcept
 {
     if (mode == DistortionEngine::Mode::sineErosion)
-        return parameters.wave;
+        return parameters.noise;
     if (mode == DistortionEngine::Mode::tapeHysteresis)
         return parameters.tapeBias;
     if (mode == DistortionEngine::Mode::transformerCore)
@@ -984,7 +984,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     Parameters blockStart = parameters;
     blockStart.driveDb = smoothedDriveDb;
     blockStart.character = smoothedCharacter;
-    blockStart.wave = smoothedWave;
+    blockStart.noise = smoothedNoise;
     blockStart.tapeBias = smoothedTapeBias;
     blockStart.transformerAirGap = smoothedTransformerAirGap;
     blockStart.downsampleJitter = smoothedDownsampleJitter;
@@ -998,8 +998,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
         smoothedDriveDb, parameters.driveDb, parameterUpdateRate, 0.015);
     smoothedCharacter = smoothTowards (
         smoothedCharacter, parameters.character, parameterUpdateRate, 0.015);
-    smoothedWave = smoothTowards (
-        smoothedWave, parameters.wave, parameterUpdateRate, 0.015);
+    smoothedNoise = smoothTowards (
+        smoothedNoise, parameters.noise, parameterUpdateRate, 0.015);
     smoothedTapeBias = smoothTowards (
         smoothedTapeBias, parameters.tapeBias, parameterUpdateRate, 0.015);
     smoothedTransformerAirGap = smoothTowards (
@@ -1034,7 +1034,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     Parameters smoothed = parameters;
     smoothed.driveDb = smoothedDriveDb;
     smoothed.character = smoothedCharacter;
-    smoothed.wave = smoothedWave;
+    smoothed.noise = smoothedNoise;
     smoothed.tapeBias = smoothedTapeBias;
     smoothed.transformerAirGap = smoothedTransformerAirGap;
     smoothed.downsampleJitter = smoothedDownsampleJitter;
@@ -1431,7 +1431,8 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
                 .mode = endParameters.mode,
                 .driveDb = driveDb,
                 .character = character,
-                .wave = lerp (startParameters.wave, endParameters.wave, ramp),
+                .noise = lerp (
+                    startParameters.noise, endParameters.noise, ramp),
                 .tapeBias = lerp (
                     startParameters.tapeBias, endParameters.tapeBias, ramp),
                 .transformerAirGap = lerp (
@@ -1862,7 +1863,7 @@ float DistortionEngine::processModeSample (float input,
             const auto filteredPink = std::tanh (7.0f * band2);
 
             // Both sources are bipolar before the shared unipolar conversion,
-            // so Wave morphs without changing the delay's average position.
+            // so Noise morphs without changing the delay's average position.
             // Frequency=0 stays exactly transparent for either source.
             const auto source = lerp (sine, filteredPink, p[3]);
             const auto modulator = p[0] <= 0.0f
@@ -2588,21 +2589,21 @@ float DistortionEngine::lookupDeterministicGain (
         const auto characterPosition = tablePosition (
             characters,
             juce::jlimit (0.0f, 1.0f, parameters.character));
-        const auto wavePosition = tablePosition (
-            waves, juce::jlimit (0.0f, 1.0f, parameters.wave));
+        const auto noisePosition = tablePosition (
+            noiseAmounts, juce::jlimit (0.0f, 1.0f, parameters.noise));
         const auto drivePosition = tablePosition (
             drives, juce::jlimit (0.0f, 36.0f, parameters.driveDb));
         const auto valueAt = [&] (size_t rate,
                                   size_t asymmetry,
                                   size_t character,
-                                  size_t wave,
+                                  size_t noise,
                                   size_t drive)
         {
             return gains[
                 (((((rate * maximumStages + stage)
                      * asymmetries.size() + asymmetry)
                     * characters.size() + character)
-                   * waves.size() + wave)
+                   * noiseAmounts.size() + noise)
                   * drives.size() + drive)];
         };
         const auto interpolateAtRate = [&] (size_t rate)
@@ -2611,21 +2612,21 @@ float DistortionEngine::lookupDeterministicGain (
             {
                 const auto interpolateAtCharacter = [&] (size_t character)
                 {
-                    const auto interpolateAtWave = [&] (size_t wave)
+                    const auto interpolateAtNoise = [&] (size_t noise)
                     {
                         return lerp (
                             valueAt (
-                                rate, asymmetry, character, wave,
+                                rate, asymmetry, character, noise,
                                 drivePosition.lower),
                             valueAt (
-                                rate, asymmetry, character, wave,
+                                rate, asymmetry, character, noise,
                                 drivePosition.upper),
                             drivePosition.fraction);
                     };
                     return lerp (
-                        interpolateAtWave (wavePosition.lower),
-                        interpolateAtWave (wavePosition.upper),
-                        wavePosition.fraction);
+                        interpolateAtNoise (noisePosition.lower),
+                        interpolateAtNoise (noisePosition.upper),
+                        noisePosition.fraction);
                 };
                 return lerp (
                     interpolateAtCharacter (characterPosition.lower),

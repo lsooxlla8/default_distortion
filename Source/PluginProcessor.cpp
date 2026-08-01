@@ -96,8 +96,8 @@ DefaultDistortionAudioProcessor::createLayout()
         bipolarAttributes));
 
     layout.add (std::make_unique<Float> (
-        juce::ParameterID { ParamIDs::wave, 1 },
-        "Wave",
+        juce::ParameterID { ParamIDs::noise, 1 },
+        "Noise",
         juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f },
         0.0f,
         juce::AudioParameterFloatAttributes {}
@@ -270,7 +270,7 @@ Parameters DefaultDistortionAudioProcessor::getCurrentParameters() const noexcep
         parameters.getRawParameterValue (ParamIDs::mode)->load());
     result.driveDb = parameters.getRawParameterValue (ParamIDs::drive)->load();
     result.character = parameters.getRawParameterValue (ParamIDs::character)->load();
-    result.wave = parameters.getRawParameterValue (ParamIDs::wave)->load();
+    result.noise = parameters.getRawParameterValue (ParamIDs::noise)->load();
     result.tapeBias = parameters.getRawParameterValue (ParamIDs::tapeBias)->load();
     result.transformerAirGap = parameters.getRawParameterValue (
         ParamIDs::transformerAirGap)->load();

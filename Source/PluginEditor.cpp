@@ -730,7 +730,7 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
         || parameters.mode != visualizedParameters.mode
         || differs (parameters.driveDb, visualizedParameters.driveDb)
         || differs (parameters.character, visualizedParameters.character)
-        || differs (parameters.wave, visualizedParameters.wave)
+        || differs (parameters.noise, visualizedParameters.noise)
         || differs (parameters.tapeBias, visualizedParameters.tapeBias)
         || differs (
             parameters.transformerAirGap,
@@ -854,7 +854,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     addAndMakeVisible (autoGainButton);
     addAndMakeVisible (asymStereoButton);
     for (auto* slider : {
-             &waveSlider, &tapeBiasSlider, &airGapSlider,
+             &noiseSlider, &tapeBiasSlider, &airGapSlider,
              &jitterSlider, &ditherSlider, &slewSlider })
         addAndMakeVisible (*slider);
 
@@ -872,7 +872,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     // the left frame edge can be covered at larger editor scales.
     asymStereoButton.toFront (false);
     for (auto* slider : {
-             &waveSlider, &tapeBiasSlider, &airGapSlider,
+             &noiseSlider, &tapeBiasSlider, &airGapSlider,
              &jitterSlider, &ditherSlider, &slewSlider })
         slider->toFront (false);
 
@@ -926,8 +926,8 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     auto& state = ownerProcessor.parameters;
     driveAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::drive, drive.slider);
-    waveAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::wave, waveSlider);
+    noiseAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::noise, noiseSlider);
     tapeBiasAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::tapeBias, tapeBiasSlider);
     airGapAttachment = std::make_unique<SliderAttachment> (
@@ -1170,7 +1170,7 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
     {
         return displayedMode == static_cast<int> (modeToCheck);
     };
-    waveSlider.setVisible (modeIs (DistortionEngine::Mode::sineErosion));
+    noiseSlider.setVisible (modeIs (DistortionEngine::Mode::sineErosion));
     tapeBiasSlider.setVisible (modeIs (DistortionEngine::Mode::tapeHysteresis));
     airGapSlider.setVisible (modeIs (DistortionEngine::Mode::transformerCore));
     jitterSlider.setVisible (modeIs (DistortionEngine::Mode::downsample));
@@ -1310,7 +1310,7 @@ void DefaultDistortionAudioProcessorEditor::resized()
     constexpr int controlHeight = 128;
     drive.setBounds (scaled (27, 78, 100, controlHeight));
     for (auto* slider : {
-             &waveSlider, &tapeBiasSlider, &airGapSlider,
+             &noiseSlider, &tapeBiasSlider, &airGapSlider,
              &jitterSlider, &ditherSlider, &slewSlider })
         slider->setBounds (scaled (112, 107, 31, 69));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
