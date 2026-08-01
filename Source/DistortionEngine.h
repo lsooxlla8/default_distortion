@@ -39,7 +39,7 @@ public:
         fullWaveRectifier,
         softFullWaveRectifier,
         transformerCore,
-        halfWaveRectifier,
+        sineErosion,
         classBSaturation,
         topologyFold,
         recursiveFoldback,
@@ -86,6 +86,8 @@ public:
 
     static const std::array<juce::String, modeCount>& getModeNames();
     static const std::array<juce::String, modeCount>& getCharacterNames();
+    static int getModeForDisplayPosition (int position) noexcept;
+    static int getDisplayPositionForMode (int mode) noexcept;
     static bool isCharacterBipolar (int mode) noexcept;
     static bool isCharacterStepped (int mode) noexcept;
     static float getDefaultCharacter (int mode) noexcept;
@@ -222,7 +224,8 @@ private:
     void processTonePre (juce::AudioBuffer<float>&);
     void processTonePost (juce::AudioBuffer<float>&);
     void processNonlinearBlock (juce::dsp::AudioBlock<float> block,
-                                const Parameters& parameters,
+                                const Parameters& startParameters,
+                                const Parameters& endParameters,
                                 double processingSampleRate,
                                 double hostSampleRate);
     void processSpectralBlock (juce::AudioBuffer<float>&,
@@ -326,7 +329,6 @@ private:
     float smoothedOutputDb = 0.0f;
     float autoGainLinear = 1.0f;
     float deterministicGainLinear = 1.0f;
-    float normalGainLinear = 1.0f;
     float smartGainLinear = 1.0f;
     double smartWetPeak = 0.0;
     double smartDrySliceEnergy = 0.0;
@@ -341,8 +343,6 @@ private:
     int smartLoudnessBlockCount = 0;
     int smartStableSamples = 0;
     int smartMeasuredSamples = 0;
-    int normalGainTrackingSamples = 0;
-    bool normalGainTracking = false;
     bool smartGainLocked = false;
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };

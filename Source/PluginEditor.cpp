@@ -58,10 +58,12 @@ public:
                   bool isCurrent)
         : juce::PopupMenu::CustomComponent (true),
           mode (modeIndex),
+          displayPosition (
+              DistortionEngine::getDisplayPositionForMode (modeIndex)),
           current (isCurrent)
     {
         setName (
-            juce::String (mode + 1).paddedLeft ('0', 2)
+            juce::String (displayPosition + 1).paddedLeft ('0', 2)
             + " "
             + DistortionEngine::getModeNames()[
                 static_cast<size_t> (mode)]);
@@ -117,7 +119,7 @@ public:
         graphics.setColour (foreground);
         graphics.setFont (monoFont (11.0f * scale, true));
         graphics.drawText (
-            juce::String (mode + 1).paddedLeft ('0', 2),
+            juce::String (displayPosition + 1).paddedLeft ('0', 2),
             number,
             juce::Justification::centredLeft);
         graphics.setFont (monoFont (9.5f * scale, true));
@@ -173,6 +175,7 @@ public:
 
 private:
     int mode = 0;
+    int displayPosition = 0;
     bool current = false;
     DistortionEngine::Visualization visualization;
 };
@@ -500,7 +503,7 @@ SmartGainButton::SmartGainButton()
 }
 
 VerticalTextButton::VerticalTextButton()
-    : juce::TextButton ("STEREO")
+    : juce::TextButton ("S T E R E O")
 {
     setClickingTogglesState (true);
     setWantsKeyboardFocus (false);
@@ -533,7 +536,7 @@ void VerticalTextButton::paintButton (
         static_cast<float> (getHeight()),
         static_cast<float> (getWidth()));
     graphics.drawFittedText (
-        "STEREO",
+        "S T E R E O",
         rotatedBounds.reduced (
             5.0f * scale, 2.0f * scale).toNearestInt(),
         juce::Justification::centred,
@@ -612,6 +615,8 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
 
     const auto parameters = processor.getCurrentParameters();
     const auto mode = juce::jlimit (0, DistortionEngine::modeCount - 1, parameters.mode);
+    const auto displayPosition =
+        DistortionEngine::getDisplayPositionForMode (mode);
     const auto& names = DistortionEngine::getModeNames();
 
     auto header = bounds.reduced (12.0f * scale).removeFromTop (
@@ -619,7 +624,7 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
     graphics.setColour (background);
     graphics.setFont (monoFont (25.0f * scale, true));
     graphics.drawText (
-        juce::String (mode + 1).paddedLeft ('0', 2),
+        juce::String (displayPosition + 1).paddedLeft ('0', 2),
         header.removeFromLeft (48.0f * scale),
         juce::Justification::centredLeft);
     graphics.setFont (monoFont (12.0f * scale, true));
@@ -834,8 +839,10 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
                 updateCharacterControl (mode);
                 const auto& name =
                     DistortionEngine::getModeNames()[static_cast<size_t> (mode)];
+                const auto displayPosition =
+                    DistortionEngine::getDisplayPositionForMode (mode);
                 modeButton.setButtonText (
-                    juce::String (mode + 1).paddedLeft ('0', 2)
+                    juce::String (displayPosition + 1).paddedLeft ('0', 2)
                     + "  " + name.toUpperCase());
                 if (characterAttachment != nullptr)
                     characterAttachment->sendInitialUpdate();
@@ -914,15 +921,19 @@ void DefaultDistortionAudioProcessorEditor::showModeMenu()
         ownerProcessor.getSampleRate() > 0.0
             ? ownerProcessor.getSampleRate()
             : 48000.0;
-    for (int mode = 0; mode < DistortionEngine::modeCount; ++mode)
+    for (int position = 0;
+         position < DistortionEngine::modeCount;
+         ++position)
     {
-        if (mode == 10 || mode == 20)
+        if (position == 10 || position == 20)
             menu.addColumnBreak();
+        const auto mode =
+            DistortionEngine::getModeForDisplayPosition (position);
         const auto title =
-            juce::String (mode + 1).paddedLeft ('0', 2)
+            juce::String (position + 1).paddedLeft ('0', 2)
             + "  " + names[static_cast<size_t> (mode)].toUpperCase();
         menu.addCustomItem (
-            mode + 1,
+            position + 1,
             std::make_unique<ModeMenuItem> (
                 mode, displaySampleRate, mode == currentMode),
             nullptr,
@@ -941,7 +952,9 @@ void DefaultDistortionAudioProcessorEditor::showModeMenu()
         [safeThis] (int result)
         {
             if (safeThis != nullptr && result > 0)
-                safeThis->selectMode (result - 1);
+                safeThis->selectMode (
+                    DistortionEngine::getModeForDisplayPosition (
+                        result - 1));
         });
 }
 
@@ -969,9 +982,13 @@ void DefaultDistortionAudioProcessorEditor::stepMode (int delta)
     const auto current = juce::jlimit (
         0, DistortionEngine::modeCount - 1,
         ownerProcessor.getCurrentParameters().mode);
+    const auto currentPosition =
+        DistortionEngine::getDisplayPositionForMode (current);
+    const auto nextPosition =
+        (currentPosition + delta + DistortionEngine::modeCount)
+        % DistortionEngine::modeCount;
     selectMode (
-        (current + delta + DistortionEngine::modeCount)
-        % DistortionEngine::modeCount);
+        DistortionEngine::getModeForDisplayPosition (nextPosition));
 }
 
 void DefaultDistortionAudioProcessorEditor::cycleAutoGain()
@@ -1077,8 +1094,10 @@ void DefaultDistortionAudioProcessorEditor::timerCallback()
     }
 
     const auto& name = DistortionEngine::getModeNames()[static_cast<size_t> (mode)];
+    const auto displayPosition =
+        DistortionEngine::getDisplayPositionForMode (mode);
     modeButton.setButtonText (
-        juce::String (mode + 1).paddedLeft ('0', 2)
+        juce::String (displayPosition + 1).paddedLeft ('0', 2)
         + "  " + name.toUpperCase());
 
     autoGainButton.setLoadingState (
@@ -1155,8 +1174,8 @@ void DefaultDistortionAudioProcessorEditor::resized()
     constexpr int controlHeight = 128;
     drive.setBounds (scaled (14, 78, controlWidth, controlHeight));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
-    asym.setBounds (scaled (272, 78, 100, controlHeight));
-    asymStereoButton.setBounds (scaled (374, 107, 24, 69));
+    asym.setBounds (scaled (285, 78, 100, controlHeight));
+    asymStereoButton.setBounds (scaled (387, 107, 12, 69));
     tone.setBounds (scaled (401, 78, controlWidth, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
     output.setBounds (scaled (143, 212, controlWidth, controlHeight));

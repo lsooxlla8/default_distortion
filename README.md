@@ -40,22 +40,22 @@ under their GPL-compatible licences.
 12. Full-Wave Rectifier
 13. Soft Full-Wave
 14. Transformer Core
-15. Half-Wave Rectifier
-16. Class-B Saturation
-17. Topology Fold
-18. Recursive Foldback
-19. Sine Fold
-20. Chebyshev Fold
-21. Modulo Wrap
-22. Downsample
-23. Bit Crusher
-24. Bit Rotation
-25. Delta Crusher
-26. Slew Limiter
-27. Schmitt Hysteresis
-28. Feedback Saturator
-29. Resonant Feedback Clip
-30. Dynamic Sag
+15. Class-B Saturation
+16. Topology Fold
+17. Recursive Foldback
+18. Sine Fold
+19. Chebyshev Fold
+20. Modulo Wrap
+21. Downsample
+22. Bit Crusher
+23. Bit Rotation
+24. Delta Crusher
+25. Slew Limiter
+26. Schmitt Hysteresis
+27. Feedback Saturator
+28. Resonant Feedback Clip
+29. Dynamic Sag
+30. Sine Erosion
 
 ## Build
 

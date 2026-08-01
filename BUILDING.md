@@ -67,11 +67,13 @@ web browser or networking.
 
 ## Auto Gain reference tables
 
-Ordinary Auto Gain starts from generated lookup tables, then trims that
-coefficient from the already-aligned dry/wet RMS while a relevant parameter is
-moving and freezes it as soon as the smoothed DSP parameters settle. It has no
-additional gain-smoothing delay and does not keep following programme level
-after the edit. **Every change to a distortion algorithm, its
+Ordinary Auto Gain is entirely predictive: it reads the generated lookup
+tables from the current smoothed DSP parameters and linearly reaches the new
+coefficient within the same audio block. It never measures or follows the
+programme RMS; that behaviour belongs exclusively to Smart Auto Gain.
+The deterministic reference signal is a -12 dBFS peak sine, so regeneration
+is repeatable and independent of whatever audio happens to be playing.
+**Every change to a distortion algorithm, its
 Drive/Character/Asymmetry mapping, stage behaviour, DC filtering, or reference
 calibration must regenerate and commit both tables.**
 

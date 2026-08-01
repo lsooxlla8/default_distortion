@@ -120,7 +120,7 @@ void testModeMetadata (TestContext& context)
         "Full-Wave Rectifier",
         "Soft Full-Wave",
         "Transformer Core",
-        "Half-Wave Rectifier",
+        "Sine Erosion",
         "Class-B Saturation",
         "Topology Fold",
         "Recursive Foldback",
@@ -143,6 +143,14 @@ void testModeMetadata (TestContext& context)
     context.expect (
         characterNames.size() == names.size(),
         "Character labels do not match mode count");
+    context.expect (
+        dd::DistortionEngine::getModeForDisplayPosition (29)
+                == static_cast<int> (
+                    dd::DistortionEngine::Mode::sineErosion)
+            && dd::DistortionEngine::getDisplayPositionForMode (
+                static_cast<int> (
+                    dd::DistortionEngine::Mode::sineErosion)) == 29,
+        "Sine Erosion is not last in the user-facing mode order");
 
     std::set<std::string> uniqueNames;
     for (const auto& name : names)
@@ -229,10 +237,13 @@ void testCanonicalClipCeilings (TestContext& context)
                 view.output.begin(), view.output.end());
             const auto maximumPeak =
                 mode == dd::DistortionEngine::Mode::morphSoftClip
-                    ? 1.02f
+                    ? 1.25001f
                     : 1.00001f;
             context.expect (
-                peak >= 0.999f && peak <= maximumPeak,
+                peak >= (mode == dd::DistortionEngine::Mode::morphSoftClip
+                            ? 1.249f
+                            : 0.999f)
+                    && peak <= maximumPeak,
                 dd::DistortionEngine::getModeNames()[
                     static_cast<size_t> (parameters.mode)]
                     + " ceiling is not 0 dBFS");
@@ -301,17 +312,13 @@ void testVitalClipTransfers (TestContext& context)
         for (size_t point = 0; point < view.input.size(); ++point)
         {
             const auto input = view.input[point];
-            const auto expected = juce::jlimit (
-                -1.0f,
-                1.0f,
-                vitalTanhReference (input)
-                    / std::abs (vitalTanhReference (1.0f)));
+            const auto expected = vitalTanhReference (input)
+                * (1.25f / std::abs (vitalTanhReference (1.5f)));
             context.expect (
                 std::abs (view.output[point] - expected) < 2.0e-6f,
                 dd::DistortionEngine::getModeNames()[
                     static_cast<size_t> (parameters.mode)]
-                    + " preview no longer uses the Vital curve with a shared "
-                      "Hard Clip 0 dB reference");
+                    + " preview no longer uses a linearly scaled Vital curve");
         }
     }
 
@@ -416,7 +423,7 @@ void testClipMorphEndpointsAndHardPlateau (TestContext& context)
                 vitalTanhReference (drivenInput));
             const auto expected =
                 mode == dd::DistortionEngine::Mode::morphSoftClip
-                    ? cubicReference (view.input[point])
+                    ? 1.25f * cubicReference (view.input[point])
                     : view.input[point]
                         + depth
                             * (hardSoftEndpoint - view.input[point]);
@@ -676,7 +683,18 @@ double measureModeRms (int mode, bool autoGain, float mix)
     int countedSamples = 0;
     for (int block = 0; block < 180; ++block)
     {
-        fillSignal (buffer, phase);
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            const auto value = 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0
+                    * phase / sampleRate));
+            for (int channel = 0;
+                 channel < buffer.getNumChannels();
+                 ++channel)
+                buffer.setSample (channel, sample, value);
+            phase += 1.0;
+        }
         engine.process (buffer, parameters);
         if (block < 120)
             continue;
@@ -1636,18 +1654,24 @@ void testRevisedAlgorithmContracts (TestContext& context)
         "Soft Full-Wave has collapsed into Full-Wave Rectifier");
 
     parameters.mode = static_cast<int> (
-        dd::DistortionEngine::Mode::halfWaveRectifier);
+        dd::DistortionEngine::Mode::sineErosion);
     parameters.character = 0.0f;
-    dd::DistortionEngine::Visualization leakyHalfWave;
+    dd::DistortionEngine::Visualization zeroHertzErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, leakyHalfWave);
+        parameters, sampleRate, zeroHertzErosion);
     parameters.character = 1.0f;
-    dd::DistortionEngine::Visualization precisionHalfWave;
+    dd::DistortionEngine::Visualization highFrequencyErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, precisionHalfWave);
+        parameters, sampleRate, highFrequencyErosion);
     context.expect (
-        visualizationDistance (leakyHalfWave, precisionHalfWave) > 0.05,
-        "Half-Wave conduction control has too little audible range");
+        visualizationDistance (
+            zeroHertzErosion, highFrequencyErosion) > 0.05,
+        "Sine Erosion Frequency has too little audible range");
+    context.expect (
+        dd::DistortionEngine::formatCharacterValue (
+            static_cast<int> (dd::DistortionEngine::Mode::sineErosion),
+            1.0f).containsIgnoreCase ("20.0 kHz"),
+        "Sine Erosion Frequency does not reach 20 kHz");
 
     parameters.mode = static_cast<int> (
         dd::DistortionEngine::Mode::signSquare);
@@ -1776,10 +1800,11 @@ void testRequestedDevelopmentFixes (TestContext& context)
     dd::DistortionEngine::Visualization softClip;
     dd::DistortionEngine::makeVisualization (
         parameters, sampleRate, softClip);
-    for (const auto value : softClip.output)
-        context.expect (
-            std::abs (value) <= 1.000001f,
-            "Soft Clip visualization exceeds the revised 0 dBFS ceiling");
+    const auto drivenSoftPeak = *std::max_element (
+        softClip.output.begin(), softClip.output.end());
+    context.expect (
+        std::abs (drivenSoftPeak - 1.25f) < 1.0e-5f,
+        "Soft Clip visualization does not reach the graph ceiling");
     parameters.driveDb = 0.0f;
     dd::DistortionEngine::makeVisualization (
         parameters, sampleRate, softClip);
@@ -1796,8 +1821,9 @@ void testRequestedDevelopmentFixes (TestContext& context)
     const auto outputAtZeroDb = softClip.output[lower]
         + fraction * (softClip.output[upper] - softClip.output[lower]);
     context.expect (
-        std::abs (outputAtZeroDb - 1.0f) < 0.002f,
-        "Soft Clip white 0 dB reference does not align with the grey input");
+        outputAtZeroDb < 1.24f
+            && std::abs (softClip.output.back() - 1.25f) < 1.0e-5f,
+        "Soft Clip visualization bends or plateaus before the graph ceiling");
 
     parameters.driveDb = 18.0f;
     parameters.mode = static_cast<int> (
@@ -1841,18 +1867,20 @@ void testRequestedDevelopmentFixes (TestContext& context)
     parameters.driveDb = 18.0f;
     parameters.character = 1.0f;
     parameters.mode = static_cast<int> (
-        dd::DistortionEngine::Mode::fullWaveRectifier);
-    dd::DistortionEngine::Visualization fullWave;
+        dd::DistortionEngine::Mode::sineErosion);
+    parameters.character = 0.5f;
+    dd::DistortionEngine::Visualization sineErosion;
     dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, fullWave);
-    parameters.mode = static_cast<int> (
-        dd::DistortionEngine::Mode::halfWaveRectifier);
-    dd::DistortionEngine::Visualization halfWave;
-    dd::DistortionEngine::makeVisualization (
-        parameters, sampleRate, halfWave);
+        parameters, sampleRate, sineErosion);
     context.expect (
-        visualizationDistance (fullWave, halfWave) > 0.28,
-        "Half-Wave remains too close to Full-Wave at full conduction");
+        visualizationDistance (
+            dd::DistortionEngine::Visualization {
+                sineErosion.input,
+                sineErosion.input,
+                sineErosion.timeDomain,
+                sineErosion.spectralDomain },
+            sineErosion) > 0.05,
+        "Sine Erosion Drive does not create phase modulation");
 
     {
         dd::Parameters deltaView;
@@ -1946,7 +1974,7 @@ void testRequestedDevelopmentFixes (TestContext& context)
         "Delta Crusher Step does not default to 50%");
 
     {
-        const std::array<std::pair<dd::DistortionEngine::Mode, float>, 8>
+        const std::array<std::pair<dd::DistortionEngine::Mode, float>, 7>
             dcModes {
                 std::pair {
                     dd::DistortionEngine::Mode::hardClip, 0.0f },
@@ -1954,8 +1982,6 @@ void testRequestedDevelopmentFixes (TestContext& context)
                     dd::DistortionEngine::Mode::fullWaveRectifier, 1.0f },
                 std::pair {
                     dd::DistortionEngine::Mode::softFullWaveRectifier, 0.7f },
-                std::pair {
-                    dd::DistortionEngine::Mode::halfWaveRectifier, 1.0f },
                 std::pair {
                     dd::DistortionEngine::Mode::harmonicMorph, -1.0f },
                 std::pair {
@@ -2013,6 +2039,8 @@ void testRequestedDevelopmentFixes (TestContext& context)
         double phase = 0.0;
         double energy = 0.0;
         int count = 0;
+        auto previousOutput = 0.0f;
+        auto transitionJump = 0.0f;
         for (int block = 0; block < 100; ++block)
         {
             if (block == 12)
@@ -2027,6 +2055,15 @@ void testRequestedDevelopmentFixes (TestContext& context)
                     / sampleRate;
             }
             engine.process (buffer, hard);
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                if (block >= 12 && block < 30)
+                    transitionJump = juce::jmax (
+                        transitionJump,
+                        std::abs (value - previousOutput));
+                previousOutput = value;
+            }
             if (block < 70)
                 continue;
             for (int sample = 0; sample < blockSize; ++sample)
@@ -2047,6 +2084,10 @@ void testRequestedDevelopmentFixes (TestContext& context)
             errorDb < 0.5f,
             "Instant Auto Gain misses a -12 dBFS Hard Clip sine by "
                 + juce::String (errorDb, 2) + " dB");
+        context.expect (
+            transitionJump < 0.12f,
+            "Predictive Auto Gain clicks or spikes while Drive moves (jump "
+                + juce::String (transitionJump, 4) + ")");
     }
 
     {

@@ -186,7 +186,6 @@ float wetOutputScale (
     const auto scalePreserving =
         mode == DistortionEngine::Mode::fullWaveRectifier
         || mode == DistortionEngine::Mode::softFullWaveRectifier
-        || mode == DistortionEngine::Mode::halfWaveRectifier
         || mode == DistortionEngine::Mode::slewLimiter;
     return scalePreserving
         ? 1.0f / juce::jmax (1.0f, stageGain)
@@ -219,7 +218,6 @@ float dcBlockingAmount (DistortionEngine::Mode mode,
 {
     if (mode == DistortionEngine::Mode::fullWaveRectifier
         || mode == DistortionEngine::Mode::softFullWaveRectifier
-        || mode == DistortionEngine::Mode::halfWaveRectifier
         || mode == DistortionEngine::Mode::harmonicMorph
         || mode == DistortionEngine::Mode::transistorFet)
         return 1.0f;
@@ -303,7 +301,7 @@ const std::array<juce::String, DistortionEngine::modeCount>& DistortionEngine::g
         "Full-Wave Rectifier",
         "Soft Full-Wave",
         "Transformer Core",
-        "Half-Wave Rectifier",
+        "Sine Erosion",
         "Class-B Saturation",
         "Topology Fold",
         "Recursive Foldback",
@@ -340,7 +338,7 @@ const std::array<juce::String, DistortionEngine::modeCount>& DistortionEngine::g
         "RECTIFY",
         "SOFTNESS",
         "CORE",
-        "CONDUCTION",
+        "FREQUENCY",
         "BIAS GAP",
         "TOPOLOGY",
         "REFLECTION",
@@ -358,6 +356,28 @@ const std::array<juce::String, DistortionEngine::modeCount>& DistortionEngine::g
         "RECOVERY"
     };
     return names;
+}
+
+int DistortionEngine::getModeForDisplayPosition (int position) noexcept
+{
+    // Keep every released internal mode ID stable while presenting the newly
+    // substituted Sine Erosion algorithm at the end of the user-facing list.
+    static constexpr std::array<int, modeCount> displayOrder {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+        10, 11, 12, 13, 15, 16, 17, 18, 19, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 14
+    };
+    return displayOrder[static_cast<size_t> (
+        juce::jlimit (0, modeCount - 1, position))];
+}
+
+int DistortionEngine::getDisplayPositionForMode (int mode) noexcept
+{
+    const auto selected = juce::jlimit (0, modeCount - 1, mode);
+    for (int position = 0; position < modeCount; ++position)
+        if (getModeForDisplayPosition (position) == selected)
+            return position;
+    return 0;
 }
 
 bool DistortionEngine::isCharacterBipolar (int mode) noexcept
@@ -386,6 +406,7 @@ float DistortionEngine::getDefaultCharacter (int mode) noexcept
             || selected == Mode::classBSaturation
             || selected == Mode::phaseDistortion
             || selected == Mode::deltaCrusher
+            || selected == Mode::sineErosion
         ? 0.5f
         : 0.0f;
 }
@@ -404,6 +425,18 @@ juce::String DistortionEngine::formatCharacterValue (int mode,
         ? juce::roundToInt (100.0f * bipolar)
         : juce::roundToInt (100.0f * unipolar);
     const auto prefix = juce::String (percentage) + "%";
+
+    if (selected == Mode::sineErosion)
+    {
+        const auto frequency = 20000.0f * unipolar;
+        if (frequency >= 1000.0f)
+            return juce::String (
+                frequency / 1000.0f,
+                frequency >= 10000.0f ? 1 : 2) + " kHz";
+        return juce::String (
+            frequency,
+            frequency >= 100.0f ? 0 : 1) + " Hz";
+    }
 
     if (selected == Mode::chebyshevFold)
         return prefix + " / " + juce::String (2.0f + 6.0f * unipolar, 1);
@@ -462,7 +495,7 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
     const auto stageDepth = driveDepth (parameters.driveDb);
 
     visualization.timeDomain =
-        mode == Mode::halfWaveRectifier
+        mode == Mode::sineErosion
         || mode == Mode::downsample
         || mode == Mode::deltaCrusher
         || mode == Mode::tapeHysteresis
@@ -547,10 +580,10 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
             : (mode == Mode::phaseDistortion
                 ? juce::jmin (displaySampleRate, 1600.0)
                 : displaySampleRate);
-    if (mode == Mode::phaseDistortion)
+    if (mode == Mode::phaseDistortion || mode == Mode::sineErosion)
     {
         const auto requiredDelaySamples = juce::roundToInt (
-            0.05 * simulationSampleRate) + 2;
+            0.05 * maximumStages * simulationSampleRate) + 2;
         for (auto& state : states)
             state.ensurePhaseDelaySize (requiredDelaySamples);
     }
@@ -561,28 +594,6 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
         driveNormalised,
         simulationSampleRate,
         displaySampleRate);
-    float softClipPositiveReference = 1.0f;
-    float softClipNegativeReference = -1.0f;
-    if (mode == Mode::morphSoftClip)
-    {
-        std::array<StageState, maximumStages> positiveStates {};
-        std::array<StageState, maximumStages> negativeStates {};
-        softClipPositiveReference = processCascadeSample (
-            1.0f,
-            modeContext,
-            stageGain,
-            stageDepth,
-            stages,
-            positiveStates);
-        softClipNegativeReference = processCascadeSample (
-            -1.0f,
-            modeContext,
-            stageGain,
-            stageDepth,
-            stages,
-            negativeStates);
-    }
-
     for (int point = 0; point < Visualization::pointCount; ++point)
     {
         const auto position = static_cast<float> (point)
@@ -596,26 +607,28 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
             for (auto& state : states)
                 state.reset();
 
-        auto displayedOutput = processCascadeSample (
+        const auto displayedOutput = processCascadeSample (
                 input,
                 modeContext,
                 stageGain,
                 stageDepth,
                 stages,
                 states);
-        // The Soft Clip graph uses the same 0 dB reference as Hard Clip:
-        // a +1/-1 input point is drawn exactly on the +1/-1 output line.
-        // This is display-only normalisation; the Vital transfer used by the
-        // audio path remains untouched.
-        if (mode == Mode::morphSoftClip)
-        {
-            const auto reference = displayedOutput >= 0.0f
-                ? std::abs (softClipPositiveReference)
-                : std::abs (softClipNegativeReference);
-            displayedOutput = clampBipolar (
-                displayedOutput / juce::jmax (1.0e-6f, reference));
-        }
         visualization.output[static_cast<size_t> (point)] = displayedOutput;
+    }
+
+    if (mode == Mode::morphSoftClip)
+    {
+        // The graph itself maps +/-1.25 to its visible top and bottom. Scale
+        // the complete Soft Clip curve once, linearly, so its peak reaches
+        // that same ceiling as the grey reference. Unlike the old per-sign
+        // normalisation and clamp, this cannot add a bend or early plateau.
+        auto peak = 0.0f;
+        for (const auto value : visualization.output)
+            peak = juce::jmax (peak, std::abs (value));
+        const auto displayScale = 1.25f / juce::jmax (1.0e-6f, peak);
+        for (auto& value : visualization.output)
+            value *= displayScale;
     }
 }
 
@@ -625,7 +638,7 @@ void DistortionEngine::prepare (double newSampleRate, int maximumBlockSize, int 
     preparedBlockSize = juce::jmax (1, maximumBlockSize);
     preparedChannels = juce::jlimit (1, maximumChannels, channels);
     const auto requiredPhaseDelaySamples =
-        juce::roundToInt (0.05 * sampleRate) + 2;
+        juce::roundToInt (0.05 * maximumStages * sampleRate) + 2;
     for (auto& channel : stageStates)
         for (auto& stage : channel)
             stage.ensurePhaseDelaySize (requiredPhaseDelaySamples);
@@ -674,15 +687,10 @@ void DistortionEngine::primeAutoGain (const Parameters& parameters)
     deterministicGainLinear = parameters.autoGainMode > 0
         ? lookupDeterministicGain (parameters, sampleRate)
         : 1.0f;
-    normalGainLinear = deterministicGainLinear;
-    autoGainLinear = parameters.autoGainMode == 1
-        ? normalGainLinear
-        : deterministicGainLinear;
+    autoGainLinear = deterministicGainLinear;
     lastGainSignature = signature;
     lastSmartGainSignature = hashSmartGainParameters (parameters);
     lastAutoGainMode = parameters.autoGainMode;
-    normalGainTracking = false;
-    normalGainTrackingSamples = 0;
     resetSmartAutoGain();
 }
 
@@ -714,9 +722,6 @@ void DistortionEngine::reset()
     wetDelayPositions.fill (0);
     autoGainLinear = 1.0f;
     deterministicGainLinear = 1.0f;
-    normalGainLinear = 1.0f;
-    normalGainTracking = false;
-    normalGainTrackingSamples = 0;
     lastGainSignature = 0;
     lastSmartGainSignature = 0;
     resetSmartAutoGain();
@@ -910,8 +915,6 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     if (requiresGainCalibration)
     {
         lastGainSignature = gainSignature;
-        normalGainTracking = parameters.autoGainMode == 1;
-        normalGainTrackingSamples = 0;
         resetSmartAutoGain();
     }
     else if (parameters.autoGainMode == 2 && lastAutoGainMode != 2)
@@ -928,6 +931,13 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
 
     const auto parameterUpdateRate =
         sampleRate / static_cast<double> (juce::jmax (1, samples));
+    Parameters blockStart = parameters;
+    blockStart.driveDb = smoothedDriveDb;
+    blockStart.character = smoothedCharacter;
+    blockStart.asymmetry = smoothedAsymmetry;
+    blockStart.tone = smoothedTone;
+    blockStart.mix = smoothedMix;
+    blockStart.outputDb = smoothedOutputDb;
     smoothedDriveDb = smoothTowards (
         smoothedDriveDb, parameters.driveDb, parameterUpdateRate, 0.015);
     smoothedCharacter = smoothTowards (
@@ -951,10 +961,6 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     deterministicGainLinear = parameters.autoGainMode > 0
         ? lookupDeterministicGain (smoothed, sampleRate)
         : 1.0f;
-    if (parameters.autoGainMode == 1
-        && normalGainTracking
-        && normalGainTrackingSamples == 0)
-        normalGainLinear = deterministicGainLinear;
 
     updateToneFilters (smoothed.tone);
     processTonePre (buffer);
@@ -974,7 +980,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
 
         if (quality == 0 || ! usesOversampling (mode))
         {
-            processNonlinearBlock (block, smoothed, sampleRate, sampleRate);
+            processNonlinearBlock (
+                block, blockStart, smoothed, sampleRate, sampleRate);
         }
         else
         {
@@ -982,7 +989,11 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
             auto oversampled = oversampler.processSamplesUp (block);
             const auto factor = static_cast<double> (1 << quality);
             processNonlinearBlock (
-                oversampled, smoothed, sampleRate * factor, sampleRate);
+                oversampled,
+                blockStart,
+                smoothed,
+                sampleRate * factor,
+                sampleRate);
             oversampler.processSamplesDown (block);
             intrinsicWetLatency =
                 oversamplingLatencies[static_cast<size_t> (quality - 1)];
@@ -1000,11 +1011,6 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     const auto smartMeasurementActive =
         parameters.autoGainMode == 2
         && ! smartGainLocked;
-    const auto normalMeasurementActive =
-        parameters.autoGainMode == 1
-        && normalGainTracking;
-    const auto levelMeasurementActive =
-        smartMeasurementActive || normalMeasurementActive;
 
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -1022,7 +1028,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
 
             dry[sample] = alignedDry;
             wet[sample] = alignedWet;
-            if (levelMeasurementActive)
+            if (smartMeasurementActive)
             {
                 dryEnergy += static_cast<double> (alignedDry) * alignedDry;
                 wetEnergy += static_cast<double> (alignedWet) * alignedWet;
@@ -1033,29 +1039,6 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     }
 
     constexpr auto silenceEnergy = 1.0e-10;
-    if (normalMeasurementActive)
-    {
-        normalGainTrackingSamples += samples;
-        const auto hasAlignedAudio =
-            normalGainTrackingSamples >= fixedLatencySamples + samples;
-        if (hasAlignedAudio
-            && dryEnergy > silenceEnergy
-            && wetEnergy > silenceEnergy)
-        {
-            normalGainLinear = juce::jlimit (
-                juce::Decibels::decibelsToGain (-72.0f),
-                juce::Decibels::decibelsToGain (48.0f),
-                static_cast<float> (std::sqrt (dryEnergy / wetEnergy)));
-        }
-
-        const auto parametersSettled =
-            std::abs (smoothedDriveDb - parameters.driveDb) < 0.005f
-            && std::abs (smoothedCharacter - parameters.character) < 0.0005f
-            && std::abs (smoothedAsymmetry - parameters.asymmetry) < 0.0005f;
-        if (hasAlignedAudio && parametersSettled)
-            normalGainTracking = false;
-    }
-
     if (smartMeasurementActive)
     {
         constexpr auto settleSeconds = 0.22;
@@ -1171,10 +1154,11 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     const auto targetAutoGain = parameters.autoGainMode <= 0
         ? 1.0f
         : (parameters.autoGainMode == 1
-            ? normalGainLinear
+            ? deterministicGainLinear
             : (! smartGainLocked
                 ? deterministicGainLinear
                 : smartGainLinear));
+    const auto gainAtBlockStart = autoGainLinear;
     autoGainLinear = targetAutoGain;
 
     for (int channel = 0; channel < channels; ++channel)
@@ -1183,8 +1167,14 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
         const auto* dry = dryBuffer.getReadPointer (channel);
         for (int sample = 0; sample < samples; ++sample)
         {
+            const auto ramp = samples > 1
+                ? static_cast<float> (sample)
+                    / static_cast<float> (samples - 1)
+                : 1.0f;
+            const auto makeup = lerp (
+                gainAtBlockStart, autoGainLinear, ramp);
             auto mixed = lerp (
-                dry[sample], wet[sample] * autoGainLinear, mix)
+                dry[sample], wet[sample] * makeup, mix)
                 * outputGain;
             if (smoothed.outputDb <= 0.001f)
                 mixed = juce::jlimit (-1.0f, 1.0f, mixed);
@@ -1267,6 +1257,18 @@ float DistortionEngine::processCascadeSample (
 {
     auto value = input;
     const auto mode = context.mode;
+
+    if (mode == Mode::phaseDistortion)
+    {
+        // Stages now increase the depth of one continuous modulated delay.
+        // Cascading separately self-modulated delays caused their phase
+        // movements to partially cancel above four stages.
+        auto combinedContext = context;
+        combinedContext.coefficients[1] *= static_cast<float> (stages);
+        return processModeSample (
+            input, combinedContext, states.front());
+    }
+
     const auto legacyDrivePath = usesLegacyDrivePath (mode);
     const auto algorithmDrive = usesDriveAsAlgorithmParameter (mode);
     const auto outputScale = wetOutputScale (mode, stageGain);
@@ -1307,18 +1309,15 @@ float DistortionEngine::processCascadeSample (
 }
 
 void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block,
-                                              const Parameters& parameters,
+                                              const Parameters& startParameters,
+                                              const Parameters& endParameters,
                                               double processingSampleRate,
                                               double hostSampleRate)
 {
     const auto mode = static_cast<Mode> (
-        juce::jlimit (0, modeCount - 1, parameters.mode));
-    const auto stages = juce::jlimit (1, maximumStages, parameters.stages);
-    const auto driveNormalised = juce::jlimit (
-        0.0f, 1.0f, parameters.driveDb / 36.0f);
-    const auto stageDriveDb = parameters.driveDb;
-    const auto stageGain = juce::Decibels::decibelsToGain (stageDriveDb);
-    const auto stageDepth = driveDepth (parameters.driveDb);
+        juce::jlimit (0, modeCount - 1, endParameters.mode));
+    const auto stages = juce::jlimit (
+        1, maximumStages, endParameters.stages);
     const auto dcCoefficient = static_cast<float> (std::exp (
         -2.0 * juce::MathConstants<double>::pi * 5.0
         / juce::jmax (1.0, processingSampleRate)));
@@ -1326,23 +1325,40 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
         processingSampleRate, 0.005);
     for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
     {
-        const auto channelAsymmetry =
-            parameters.asymmetryStereo && channel == 1
-                ? -parameters.asymmetry
-                : parameters.asymmetry;
-        const auto dcMix = dcBlockingAmount (
-            mode, parameters.character, channelAsymmetry);
-        const auto modeContext = makeModeContext (
-            mode,
-            parameters.character,
-            channelAsymmetry,
-            driveNormalised,
-            processingSampleRate,
-            hostSampleRate);
         auto* data = block.getChannelPointer (channel);
 
         for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
         {
+            const auto ramp = block.getNumSamples() > 1
+                ? static_cast<float> (sample)
+                    / static_cast<float> (block.getNumSamples() - 1)
+                : 1.0f;
+            const auto driveDb = lerp (
+                startParameters.driveDb,
+                endParameters.driveDb,
+                ramp);
+            const auto character = lerp (
+                startParameters.character,
+                endParameters.character,
+                ramp);
+            const auto asymmetry = lerp (
+                startParameters.asymmetry,
+                endParameters.asymmetry,
+                ramp);
+            const auto channelAsymmetry =
+                endParameters.asymmetryStereo && channel == 1
+                    ? -asymmetry
+                    : asymmetry;
+            const auto modeContext = makeModeContext (
+                mode,
+                character,
+                channelAsymmetry,
+                juce::jlimit (0.0f, 1.0f, driveDb / 36.0f),
+                processingSampleRate,
+                hostSampleRate);
+            const auto stageGain =
+                juce::Decibels::decibelsToGain (driveDb);
+            const auto stageDepth = driveDepth (driveDb);
             const auto value = processCascadeSample (
                 data[sample],
                 modeContext,
@@ -1357,6 +1373,8 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
                 value - previousInput + dcCoefficient * previousOutput;
             dcPreviousInput[channel] = value;
             dcPreviousOutput[channel] = filtered;
+            const auto dcMix = dcBlockingAmount (
+                mode, character, channelAsymmetry);
             dcMixState[channel] =
                 dcMix + dcMixCoefficient * (dcMixState[channel] - dcMix);
             const auto dcBlocked = lerp (
@@ -1421,12 +1439,15 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
             p[0] = lerp (0.85f, 0.008f, c01);
             break;
 
-        case Mode::halfWaveRectifier:
-            p[0] = lerp (0.42f, 0.0f, smoothStep01 (c01));
-            p[1] = lerp (0.10f, 0.002f, c01);
-            p[2] = 0.55f * std::pow (1.0f - c01, 1.6f);
-            p[3] = smoothStep01 (c01);
+        case Mode::sineErosion:
+        {
+            const auto frequencyHz = 20000.0f * c01;
+            p[0] = 2.0f * pi * frequencyHz
+                / static_cast<float> (
+                    juce::jmax (1.0, processingSampleRate));
+            p[1] = 50.0f * drive;
             break;
+        }
 
         case Mode::topologyFold:
             integer[0] = c01 < 0.25f ? 0 : (c01 > 0.75f ? 2 : 1);
@@ -1500,7 +1521,7 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
         case Mode::deltaCrusher:
             p[0] = std::pow (
                 10.0f,
-                lerp (-4.0f, -0.125f, std::pow (c01, 0.25f)));
+                lerp (-6.0f, 0.0f, std::pow (c01, 0.18f)));
             p[1] = lerp (1.0f, 4.0f, smoothStep01 (drive));
             break;
 
@@ -1655,29 +1676,62 @@ float DistortionEngine::processModeSample (float input,
             return x * std::tanh (x / p[0]);
         }
 
-        case Mode::halfWaveRectifier:
+        case Mode::sineErosion:
         {
-            const auto relative = x - p[0];
-            const auto junction = 0.5f
-                * (relative
-                   + std::sqrt (relative * relative + p[1] * p[1]));
-            const auto zeroRelative = -p[0];
-            const auto zeroOffset = 0.5f
-                * (zeroRelative
-                   + std::sqrt (
-                       zeroRelative * zeroRelative + p[1] * p[1]));
-            const auto forward = juce::jmax (0.0f, junction - zeroOffset);
-            const auto leaky = forward + p[2] * juce::jmin (0.0f, x);
-            const auto primitive = x > 0.0f ? 0.5f * x * x : 0.0f;
-            auto precise = juce::jmax (0.0f, x);
-            if (state.counter > 0
-                && std::abs (x - state.previousInput) > 1.0e-5f)
-                precise = (primitive - state.previousOutput)
-                    / (x - state.previousInput);
-            state.previousInput = x;
-            state.previousOutput = primitive;
-            state.counter = 1;
-            return lerp (leaky, precise, p[3]);
+            const auto delaySize =
+                static_cast<int> (state.phaseDelay.size());
+            if (delaySize < 2)
+                return x;
+
+            // A pure unipolar sinusoid. Starting at zero keeps Frequency=0
+            // exactly transparent instead of introducing a static delay.
+            const auto modulator = 0.5f - 0.5f * static_cast<float> (
+                std::cos (state.phase));
+            state.phase += p[0];
+            if (state.phase >= juce::MathConstants<double>::twoPi)
+                state.phase = std::fmod (
+                    state.phase,
+                    juce::MathConstants<double>::twoPi);
+
+            const auto delaySamples = juce::jlimit (
+                0.0f,
+                static_cast<float> (delaySize - 2),
+                0.001f * p[1] * modulator
+                    * static_cast<float> (processingSampleRate));
+            const auto write = state.phaseWritePosition;
+            state.phaseDelay[static_cast<size_t> (write)] = x;
+            auto readPosition = static_cast<float> (write) - delaySamples;
+            while (readPosition < 0.0f)
+                readPosition += static_cast<float> (delaySize);
+            const auto first = static_cast<int> (std::floor (readPosition))
+                % delaySize;
+            const auto second = (first + 1) % delaySize;
+            const auto fraction = readPosition
+                - static_cast<float> (first);
+            const auto delayed = lerp (
+                state.phaseDelay[static_cast<size_t> (first)],
+                state.phaseDelay[static_cast<size_t> (second)],
+                fraction);
+            state.phaseWritePosition = (write + 1) % delaySize;
+
+            constexpr auto silenceThreshold = 3.16227766e-5f;
+            const auto silenceHold = juce::jmax (
+                8, juce::roundToInt (0.001 * processingSampleRate));
+            if (std::abs (x) <= silenceThreshold)
+                ++state.silenceSamples;
+            else
+            {
+                state.silenceSamples = 0;
+                state.tailGain = 1.0f;
+            }
+            if (state.silenceSamples >= silenceHold)
+            {
+                const auto releaseStep = static_cast<float> (
+                    1.0 / juce::jmax (1.0, 0.006 * processingSampleRate));
+                state.tailGain = juce::jmax (
+                    0.0f, state.tailGain - releaseStep);
+            }
+            return delayed * state.tailGain;
         }
 
         case Mode::topologyFold:
@@ -1816,17 +1870,10 @@ float DistortionEngine::processModeSample (float input,
         case Mode::deltaCrusher:
         {
             const auto predictionError = x - state.memory;
-            state.secondary += predictionError;
-            const auto requestedDelta =
-                std::round (state.secondary / p[0]) * p[0];
-            const auto nextMemory = juce::jlimit (
-                -p[1], p[1], state.memory + requestedDelta);
-            const auto appliedDelta = nextMemory - state.memory;
-            state.memory = nextMemory;
-            state.secondary = juce::jlimit (
-                -2.0f * p[0],
-                2.0f * p[0],
-                state.secondary - appliedDelta);
+            const auto quantisedError =
+                std::round (predictionError / p[0]) * p[0];
+            state.memory = juce::jlimit (
+                -p[1], p[1], state.memory + quantisedError);
             state.previousInput = x;
             return state.memory / p[1];
         }
@@ -2203,7 +2250,8 @@ bool DistortionEngine::usesDriveAsAlgorithmParameter (Mode mode) noexcept
     return mode == Mode::bitCrusher
         || mode == Mode::classBSaturation
         || mode == Mode::downsample
-        || mode == Mode::phaseDistortion;
+        || mode == Mode::phaseDistortion
+        || mode == Mode::sineErosion;
 }
 
 bool DistortionEngine::usesOversampling (Mode mode) noexcept
@@ -2213,6 +2261,7 @@ bool DistortionEngine::usesOversampling (Mode mode) noexcept
         && mode != Mode::downsample
         && mode != Mode::deltaCrusher
         && mode != Mode::phaseDistortion
+        && mode != Mode::sineErosion
         && mode != Mode::spectralClip;
 }
 
@@ -2332,29 +2381,45 @@ float DistortionEngine::calculateReferenceAutoGain (
         juce::jlimit (0, modeCount - 1, parameters.mode));
     if (mode == Mode::spectralClip)
     {
-        const auto c01 = unipolarCharacter (parameters.character);
-        const auto stages = juce::jlimit (
-            1, maximumStages, parameters.stages);
-        const auto threshold =
-            0.78f * juce::Decibels::decibelsToGain (
-                -parameters.driveDb * lerp (0.35f, 1.0f, c01));
-        const auto depth = driveDepth (parameters.driveDb);
+        SpectralState calibrationState;
+        juce::dsp::FFT calibrationFft { fftOrder };
+        std::array<float, fftSize> calibrationWindow {};
+        std::array<float, fftSize> inputDelay {};
+        for (int index = 0; index < fftSize; ++index)
+            calibrationWindow[static_cast<size_t> (index)] =
+                0.5f - 0.5f * std::cos (
+                    2.0f * pi * static_cast<float> (index)
+                    / static_cast<float> (fftSize));
+
+        constexpr auto warmupSamples = fftSize * 8;
+        constexpr auto measurementSamples = 32768;
+        auto delayPosition = 0;
         double inputEnergy = 0.0;
         double outputEnergy = 0.0;
         float outputPeak = 0.0f;
-        for (int point = 0;
-             point < Visualization::pointCount;
-             ++point)
+        for (int sample = 0;
+             sample < warmupSamples + measurementSamples;
+             ++sample)
         {
-            const auto input = 1.5f * static_cast<float> (point)
-                / static_cast<float> (Visualization::pointCount - 1);
-            const auto output = lerp (
+            const auto input = 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0
+                    * static_cast<double> (sample)
+                    / juce::jmax (1.0, displaySampleRate)));
+            const auto alignedInput =
+                inputDelay[static_cast<size_t> (delayPosition)];
+            inputDelay[static_cast<size_t> (delayPosition)] = input;
+            delayPosition = (delayPosition + 1) % fftSize;
+            const auto output = processSpectralSampleCore (
                 input,
-                shapeSpectralMagnitude (
-                    input, threshold, c01, stages),
-                depth);
+                calibrationState,
+                parameters,
+                calibrationFft,
+                calibrationWindow);
+            if (sample < warmupSamples)
+                continue;
             inputEnergy += static_cast<double> (
-                input) * input;
+                alignedInput) * alignedInput;
             outputEnergy += static_cast<double> (
                 output) * output;
             outputPeak = juce::jmax (
@@ -2364,10 +2429,6 @@ float DistortionEngine::calculateReferenceAutoGain (
             return 1.0f;
         auto gain = static_cast<float> (
             std::sqrt (inputEnergy / outputEnergy));
-        // The transfer-view calibration slightly overestimates makeup for the
-        // overlapped Hann analysis/resynthesis path. This fixed correction was
-        // measured against the actual four-times-overlapped processor.
-        gain *= 0.965f;
         gain = juce::jlimit (
             juce::Decibels::decibelsToGain (-72.0f),
             juce::Decibels::decibelsToGain (18.0f),
@@ -2380,7 +2441,8 @@ float DistortionEngine::calculateReferenceAutoGain (
     const auto longMemoryCalibration =
         mode == Mode::downsample
         || mode == Mode::slewLimiter
-        || mode == Mode::phaseDistortion;
+        || mode == Mode::phaseDistortion
+        || mode == Mode::sineErosion;
     const auto calibrationSamples =
         mode == Mode::phaseDistortion
             ? 65536
@@ -2392,10 +2454,11 @@ float DistortionEngine::calculateReferenceAutoGain (
     std::array<
         std::array<StageState, maximumStages>,
         maximumChannels> calibrationStates {};
-    if (mode == Mode::phaseDistortion)
+    if (mode == Mode::phaseDistortion || mode == Mode::sineErosion)
     {
         const auto requiredDelaySamples =
-            juce::roundToInt (0.05 * displaySampleRate) + 2;
+            juce::roundToInt (
+                0.05 * maximumStages * displaySampleRate) + 2;
         for (auto& channel : calibrationStates)
             for (auto& state : channel)
                 state.ensurePhaseDelaySize (requiredDelaySamples);
@@ -2419,11 +2482,12 @@ float DistortionEngine::calculateReferenceAutoGain (
     for (int sample = 0; sample < calibrationSamples; ++sample)
     {
         const auto time = static_cast<double> (sample) / displaySampleRate;
-        const auto input = static_cast<float> (
-            0.61 * std::sin (
-                juce::MathConstants<double>::twoPi * 173.0 * time)
-            + 0.19 * std::sin (
-                juce::MathConstants<double>::twoPi * 997.0 * time));
+        // Ordinary Auto Gain is deliberately programme-independent. Calibrate
+        // every table cell against one explicit studio reference instead of
+        // trying to infer the current material: a -12 dBFS peak sine.
+        const auto input = 0.25118864f * static_cast<float> (
+            std::sin (
+                juce::MathConstants<double>::twoPi * 173.0 * time));
         for (int channel = 0; channel < calibrationChannels; ++channel)
         {
             const auto channelAsymmetry =

@@ -173,9 +173,9 @@ void DefaultDistortionAudioProcessor::prepareToPlay (double newSampleRate,
         newSampleRate,
         samplesPerBlock,
         juce::jmax (1, getTotalNumOutputChannels()));
-    // Initial deterministic compensation is prepared on the host's setup
-    // thread. Subsequent parameter edits are recalibrated by the engine's
-    // worker, never by the real-time audio callback.
+    // Prime deterministic compensation on the host setup thread. Subsequent
+    // edits use the pre-generated table directly in the audio callback; no
+    // programme measurement or background recalibration is involved.
     engine.primeAutoGain (getCurrentParameters());
     setLatencySamples (engine.getLatencySamples());
 }
