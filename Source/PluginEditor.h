@@ -120,8 +120,13 @@ public:
 class VerticalTextSlider final : public juce::Slider
 {
 public:
-    VerticalTextSlider();
+    VerticalTextSlider (juce::String parameterName,
+                        juce::String verticalText,
+                        double defaultValue);
     void paint (juce::Graphics&) override;
+
+private:
+    juce::String text;
 };
 
 class ResponseDisplay final : public juce::Component,
@@ -179,7 +184,12 @@ private:
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
     VerticalTextButton asymStereoButton;
-    VerticalTextSlider waveSlider;
+    VerticalTextSlider waveSlider { "WAVE", "W A V E", 0.0 };
+    VerticalTextSlider tapeBiasSlider { "BIAS", "B I A S", 0.5 };
+    VerticalTextSlider airGapSlider { "AIR GAP", "A I R  G A P", 0.0 };
+    VerticalTextSlider jitterSlider { "JITTER", "J I T T E R", 0.0 };
+    VerticalTextSlider ditherSlider { "DITHER", "D I T H E R", 0.0 };
+    VerticalTextSlider slewSlider { "SLEW", "S L E W", 0.0 };
 
     ParameterControl drive { "DRIVE" };
     ParameterControl character { "CURVE" };
@@ -193,6 +203,11 @@ private:
 
     std::unique_ptr<SliderAttachment> driveAttachment;
     std::unique_ptr<SliderAttachment> waveAttachment;
+    std::unique_ptr<SliderAttachment> tapeBiasAttachment;
+    std::unique_ptr<SliderAttachment> airGapAttachment;
+    std::unique_ptr<SliderAttachment> jitterAttachment;
+    std::unique_ptr<SliderAttachment> ditherAttachment;
+    std::unique_ptr<SliderAttachment> slewAttachment;
     std::unique_ptr<SliderAttachment> asymAttachment;
     std::unique_ptr<ButtonAttachment> asymStereoAttachment;
     std::unique_ptr<SliderAttachment> toneAttachment;

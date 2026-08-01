@@ -514,27 +514,42 @@ void VerticalTextButton::paintButton (
     bool isHighlighted,
     bool isDown)
 {
-    getLookAndFeel().drawButtonBackground (
-        graphics, *this, findColour (buttonColourId),
-        isHighlighted, isDown);
-
     const auto active = getToggleState() || isDown;
-    graphics.setColour (
-        active ? backgroundOf (*this) : foregroundOf (*this));
     const auto scale = scaleOf (*this);
+    const auto connectorWidth = juce::jmax (2.0f, 4.0f * scale);
+    auto body = getLocalBounds().toFloat();
+    body.removeFromLeft (connectorWidth);
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    const auto border = juce::jmax (1.0f, 2.0f * scale);
+
+    graphics.setColour (foreground);
+    graphics.fillRect (0.0f,
+                       body.getCentreY() - 1.5f * scale,
+                       body.getX() + border,
+                       3.0f * scale);
+    graphics.setColour (active ? foreground : background);
+    graphics.fillRect (body);
+    graphics.setColour (foreground);
+    graphics.fillRect (body.removeFromTop (border));
+    graphics.fillRect (body.removeFromBottom (border));
+    graphics.fillRect (body.removeFromLeft (border));
+    graphics.fillRect (body.removeFromRight (border));
+
+    graphics.setColour (active ? background : foreground);
+    if (isHighlighted && ! active)
+        graphics.setColour (foreground.brighter (0.08f));
     graphics.setFont (monoFont (10.0f * scale, true));
 
     juce::Graphics::ScopedSaveState saved (graphics);
     graphics.addTransform (
         juce::AffineTransform::rotation (
             -juce::MathConstants<float>::halfPi,
-            static_cast<float> (getWidth()) * 0.5f,
-            static_cast<float> (getHeight()) * 0.5f));
+            body.getCentreX(), body.getCentreY()));
     const auto rotatedBounds = juce::Rectangle<float> (
-        static_cast<float> (getWidth() - getHeight()) * 0.5f,
-        static_cast<float> (getHeight() - getWidth()) * 0.5f,
-        static_cast<float> (getHeight()),
-        static_cast<float> (getWidth()));
+        body.getCentreX() - body.getHeight() * 0.5f,
+        body.getCentreY() - body.getWidth() * 0.5f,
+        body.getHeight(), body.getWidth());
     graphics.drawFittedText (
         "S T E R E O",
         rotatedBounds.reduced (
@@ -543,56 +558,78 @@ void VerticalTextButton::paintButton (
         1);
 }
 
-VerticalTextSlider::VerticalTextSlider()
+VerticalTextSlider::VerticalTextSlider (
+    juce::String parameterName,
+    juce::String verticalText,
+    double defaultValue)
+    : text (std::move (verticalText))
 {
-    setName ("WAVE");
-    setTitle ("WAVE");
+    setName (parameterName);
+    setTitle (parameterName);
     setSliderStyle (juce::Slider::LinearVertical);
     setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     setRange (0.0, 1.0, 0.001);
-    setDoubleClickReturnValue (true, 0.0);
+    setDoubleClickReturnValue (true, defaultValue);
     setMouseDragSensitivity (140);
 }
 
 void VerticalTextSlider::paint (juce::Graphics& graphics)
 {
     const auto scale = scaleOf (*this);
-    auto bounds = getLocalBounds().toFloat().reduced (scale);
+    const auto connectorWidth = juce::jmax (2.0f, 4.0f * scale);
+    auto bounds = getLocalBounds().toFloat();
+    bounds.removeFromLeft (connectorWidth);
     const auto foreground = foregroundOf (*this);
     const auto background = backgroundOf (*this);
+    const auto border = juce::jmax (1.0f, 2.0f * scale);
+
+    graphics.setColour (foreground);
+    graphics.fillRect (0.0f,
+                       bounds.getCentreY() - 1.5f * scale,
+                       bounds.getX() + border,
+                       3.0f * scale);
     graphics.setColour (background);
     graphics.fillRect (bounds);
     graphics.setColour (foreground);
-    graphics.drawRect (bounds, 2.0f * scale);
+    auto framed = bounds;
+    graphics.fillRect (framed.removeFromTop (border));
+    graphics.fillRect (framed.removeFromBottom (border));
+    graphics.fillRect (framed.removeFromLeft (border));
+    graphics.fillRect (framed.removeFromRight (border));
 
     const auto progress = static_cast<float> (
         getNormalisableRange().convertTo0to1 (getValue()));
-    auto track = bounds.reduced (4.0f * scale);
-    const auto markerY = track.getBottom()
-        - progress * track.getHeight();
-    graphics.setColour (mutedOf (*this));
-    graphics.fillRect (
-        track.getX(), markerY - scale, track.getWidth(), 2.0f * scale);
-
+    const auto interior = bounds.reduced (border);
+    const auto fill = interior.withTop (
+        interior.getBottom() - progress * interior.getHeight());
     graphics.setColour (foreground);
+    graphics.fillRect (fill);
+
     graphics.setFont (monoFont (10.0f * scale, true));
-    juce::Graphics::ScopedSaveState saved (graphics);
-    graphics.addTransform (
-        juce::AffineTransform::rotation (
-            -juce::MathConstants<float>::halfPi,
-            static_cast<float> (getWidth()) * 0.5f,
-            static_cast<float> (getHeight()) * 0.5f));
-    const auto rotatedBounds = juce::Rectangle<float> (
-        static_cast<float> (getWidth() - getHeight()) * 0.5f,
-        static_cast<float> (getHeight() - getWidth()) * 0.5f,
-        static_cast<float> (getHeight()),
-        static_cast<float> (getWidth()));
-    graphics.drawFittedText (
-        "W A V E",
-        rotatedBounds.reduced (
-            5.0f * scale, 2.0f * scale).toNearestInt(),
-        juce::Justification::centred,
-        1);
+    const auto drawText = [&] (juce::Colour colour,
+                               juce::Rectangle<int> clip)
+    {
+        juce::Graphics::ScopedSaveState clipped (graphics);
+        graphics.reduceClipRegion (clip);
+        graphics.setColour (colour);
+        juce::Graphics::ScopedSaveState rotated (graphics);
+        graphics.addTransform (
+            juce::AffineTransform::rotation (
+                -juce::MathConstants<float>::halfPi,
+                bounds.getCentreX(), bounds.getCentreY()));
+        const auto rotatedBounds = juce::Rectangle<float> (
+            bounds.getCentreX() - bounds.getHeight() * 0.5f,
+            bounds.getCentreY() - bounds.getWidth() * 0.5f,
+            bounds.getHeight(), bounds.getWidth());
+        graphics.drawFittedText (
+            text,
+            rotatedBounds.reduced (
+                5.0f * scale, 2.0f * scale).toNearestInt(),
+            juce::Justification::centred,
+            1);
+    };
+    drawText (foreground, interior.toNearestInt());
+    drawText (background, fill.toNearestInt());
 }
 
 void SmartGainButton::setLoadingState (float progress, bool isLoading)
@@ -805,7 +842,10 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     autoGainButton.onClick = [this] { cycleAutoGain(); };
     addAndMakeVisible (autoGainButton);
     addAndMakeVisible (asymStereoButton);
-    addAndMakeVisible (waveSlider);
+    for (auto* slider : {
+             &waveSlider, &tapeBiasSlider, &airGapSlider,
+             &jitterSlider, &ditherSlider, &slewSlider })
+        addAndMakeVisible (*slider);
 
     for (auto* control : {
              &drive, &character, &asym, &tone,
@@ -868,6 +908,16 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
         state, ParamIDs::drive, drive.slider);
     waveAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::wave, waveSlider);
+    tapeBiasAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::tapeBias, tapeBiasSlider);
+    airGapAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::transformerAirGap, airGapSlider);
+    jitterAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::downsampleJitter, jitterSlider);
+    ditherAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::bitCrusherDither, ditherSlider);
+    slewAttachment = std::make_unique<SliderAttachment> (
+        state, ParamIDs::schmittSlew, slewSlider);
     asymAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::asym, asym.slider);
     asymStereoAttachment = std::make_unique<ButtonAttachment> (
@@ -1096,9 +1146,16 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
     };
     drive.slider.updateText();
     character.slider.updateText();
-    waveSlider.setVisible (
-        displayedMode == static_cast<int> (
-            DistortionEngine::Mode::sineErosion));
+    const auto modeIs = [this] (DistortionEngine::Mode modeToCheck)
+    {
+        return displayedMode == static_cast<int> (modeToCheck);
+    };
+    waveSlider.setVisible (modeIs (DistortionEngine::Mode::sineErosion));
+    tapeBiasSlider.setVisible (modeIs (DistortionEngine::Mode::tapeHysteresis));
+    airGapSlider.setVisible (modeIs (DistortionEngine::Mode::transformerCore));
+    jitterSlider.setVisible (modeIs (DistortionEngine::Mode::downsample));
+    ditherSlider.setVisible (modeIs (DistortionEngine::Mode::bitCrusher));
+    slewSlider.setVisible (modeIs (DistortionEngine::Mode::schmittHysteresis));
     drive.repaint();
     character.repaint();
 }
@@ -1196,9 +1253,6 @@ void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.setColour (foreground);
     graphics.fillRect (rect (258, 0, 26, 24));
     graphics.fillRect (rect (258, 40, 26, 24));
-    graphics.fillRect (rect (374, 140, 4, 3));
-    if (waveSlider.isVisible())
-        graphics.fillRect (rect (116, 140, 4, 3));
 }
 
 void DefaultDistortionAudioProcessorEditor::resized()
@@ -1235,10 +1289,13 @@ void DefaultDistortionAudioProcessorEditor::resized()
     constexpr int controlWidth = 126;
     constexpr int controlHeight = 128;
     drive.setBounds (scaled (27, 78, 100, controlHeight));
-    waveSlider.setBounds (scaled (118, 107, 24, 69));
+    for (auto* slider : {
+             &waveSlider, &tapeBiasSlider, &airGapSlider,
+             &jitterSlider, &ditherSlider, &slewSlider })
+        slider->setBounds (scaled (115, 107, 28, 69));
     character.setBounds (scaled (143, 78, controlWidth, controlHeight));
     asym.setBounds (scaled (285, 78, 100, controlHeight));
-    asymStereoButton.setBounds (scaled (376, 107, 24, 69));
+    asymStereoButton.setBounds (scaled (373, 107, 29, 69));
     tone.setBounds (scaled (414, 78, 100, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
     output.setBounds (scaled (143, 212, controlWidth, controlHeight));

@@ -75,10 +75,11 @@ The deterministic reference signal is a -12 dBFS peak sine, so regeneration
 is repeatable and independent of whatever audio happens to be playing.
 **Every change to a distortion algorithm, its
 Drive/Character/Asymmetry mapping, stage behaviour, DC filtering, or reference
-calibration must regenerate and commit both tables.**
+calibration must regenerate and commit all four tables.**
 
 Build the test generator first, then regenerate the main table, the dense
-Spectral Clip table, and the Sine Erosion table with its additional Wave axis:
+Spectral Clip table, the Sine Erosion table with its additional Wave axis,
+and the focused table for algorithm-specific secondary controls:
 
 ```sh
 cmake --build build --config Release --target DefaultDistortionTests --parallel
@@ -88,6 +89,8 @@ cmake --build build --config Release --target DefaultDistortionTests --parallel
   --dump-spectral-auto-gain-table > Source/SpectralAutoGainTable.h
 ./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
   --dump-sine-erosion-auto-gain-table > Source/SineErosionAutoGainTable.h
+./build/DefaultDistortionTests_artefacts/Release/DefaultDistortionTests \
+  --dump-secondary-auto-gain-table > Source/SecondaryAutoGainTable.h
 cmake --build build --config Release --target DefaultDistortionTests --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
@@ -98,6 +101,9 @@ across Drive, Character, and Asymmetry. Spectral Clip has a denser dedicated
 table because its makeup curve changes more sharply between the main grid
 points. Sine Erosion has a dedicated table so Wave can be calibrated without
 needlessly multiplying every other mode's table by that extra dimension.
+The secondary-control table covers Tape Bias, Transformer Air Gap, Downsample
+Jitter, Bit Crusher Dither, and Schmitt Slew without adding a redundant axis
+to the other 25 modes.
 
 ## GitHub Actions and releases
 

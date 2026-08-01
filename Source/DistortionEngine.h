@@ -120,6 +120,9 @@ private:
         float pinkC = 0.0f;
         float bandpassIc1 = 0.0f;
         float bandpassIc2 = 0.0f;
+        float bandpass2Ic1 = 0.0f;
+        float bandpass2Ic2 = 0.0f;
+        float smoothedDelaySamples = 0.0f;
         double phase = 0.0;
         std::uint32_t noiseState = UINT32_C (0x9e3779b9);
         int counter = 0;
@@ -150,6 +153,9 @@ private:
             pinkC = 0.0f;
             bandpassIc1 = 0.0f;
             bandpassIc2 = 0.0f;
+            bandpass2Ic1 = 0.0f;
+            bandpass2Ic2 = 0.0f;
+            smoothedDelaySamples = 0.0f;
             phase = 0.0;
             noiseState = UINT32_C (0x9e3779b9);
             counter = 0;
@@ -166,7 +172,7 @@ private:
         Mode mode = Mode::morphSoftClip;
         float character = 0.0f;
         float character01 = 0.0f;
-        float wave = 0.0f;
+        float secondaryParameter = 0.0f;
         float asymmetry = 0.0f;
         float driveNormalised = 0.0f;
         double processingSampleRate = 44100.0;
@@ -260,7 +266,7 @@ private:
 
     static ModeContext makeModeContext (Mode mode,
                                         float character,
-                                        float wave,
+                                        float secondaryParameter,
                                         float asymmetry,
                                         float driveNormalised,
                                         double processingSampleRate,
@@ -338,6 +344,11 @@ private:
     float smoothedDriveDb = 0.0f;
     float smoothedCharacter = 0.0f;
     float smoothedWave = 0.0f;
+    float smoothedTapeBias = 0.5f;
+    float smoothedTransformerAirGap = 0.0f;
+    float smoothedDownsampleJitter = 0.0f;
+    float smoothedBitCrusherDither = 0.0f;
+    float smoothedSchmittSlew = 0.0f;
     float smoothedAsymmetry = 0.0f;
     float smoothedTone = 0.0f;
     float smoothedMix = 1.0f;

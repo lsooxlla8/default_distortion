@@ -713,6 +713,39 @@ double measureModeRms (int mode, bool autoGain, float mix, float wave = 0.0f)
     return std::sqrt (energy / juce::jmax (1, countedSamples));
 }
 
+double measureConfiguredRms (dd::Parameters parameters,
+                             bool autoGain,
+                             float mix)
+{
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+    parameters.mix = mix;
+    parameters.autoGainMode = autoGain ? 1 : 0;
+    engine.primeAutoGain (parameters);
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    double phase = 0.0;
+    double energy = 0.0;
+    int countedSamples = 0;
+    for (int block = 0; block < 180; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+            buffer.setSample (0, sample, 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0
+                    * phase++ / sampleRate)));
+        engine.process (buffer, parameters);
+        if (block < 120)
+            continue;
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = static_cast<double> (buffer.getSample (0, sample));
+            energy += value * value;
+            ++countedSamples;
+        }
+    }
+    return std::sqrt (energy / juce::jmax (1, countedSamples));
+}
+
 void testAutoGainForEveryMode (TestContext& context)
 {
     for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
@@ -776,6 +809,57 @@ void testSineErosionWaveAutoGain (TestContext& context)
         std::isfinite (compensated) && errorDb <= 1.0f,
         "Sine Erosion Wave-aware Auto Gain misses the dry reference by "
             + juce::String (errorDb, 2) + " dB");
+}
+
+void testSecondaryControlAutoGain (TestContext& context)
+{
+    dd::Parameters parameters;
+    parameters.driveDb = 18.0f;
+    parameters.character = 0.75f;
+    parameters.stages = 2;
+    const auto dry = measureConfiguredRms (parameters, false, 0.0f);
+    const auto expectCompensated = [&] (
+        dd::DistortionEngine::Mode mode,
+        auto setSecondary,
+        const juce::String& name)
+    {
+        auto configured = parameters;
+        configured.mode = static_cast<int> (mode);
+        setSecondary (configured);
+        const auto wet = measureConfiguredRms (configured, true, 1.0f);
+        const auto referenceGain = dd::DistortionEngine::calculateReferenceAutoGain (
+            configured, sampleRate);
+        const auto errorDb = std::abs (juce::Decibels::gainToDecibels (
+            static_cast<float> (wet / dry), -100.0f));
+        context.expect (
+            std::isfinite (wet)
+                && errorDb <= (mode == dd::DistortionEngine::Mode::downsample
+                        ? 2.0f
+                        : 1.0f),
+            name + "-aware Auto Gain misses dry RMS by "
+                + juce::String (errorDb, 2) + " dB (reference gain "
+                + juce::String (referenceGain, 4) + ")");
+    };
+    expectCompensated (
+        dd::DistortionEngine::Mode::tapeHysteresis,
+        [] (dd::Parameters& p) { p.tapeBias = 1.0f; },
+        "Tape Bias");
+    expectCompensated (
+        dd::DistortionEngine::Mode::transformerCore,
+        [] (dd::Parameters& p) { p.transformerAirGap = 1.0f; },
+        "Transformer Air Gap");
+    expectCompensated (
+        dd::DistortionEngine::Mode::downsample,
+        [] (dd::Parameters& p) { p.downsampleJitter = 1.0f; },
+        "Downsample Jitter");
+    expectCompensated (
+        dd::DistortionEngine::Mode::bitCrusher,
+        [] (dd::Parameters& p) { p.bitCrusherDither = 1.0f; },
+        "Bit Crusher Dither");
+    expectCompensated (
+        dd::DistortionEngine::Mode::schmittHysteresis,
+        [] (dd::Parameters& p) { p.schmittSlew = 1.0f; },
+        "Schmitt Slew");
 }
 
 void testEveryCharacterHasARealVisualization (TestContext& context)
@@ -2216,6 +2300,162 @@ void testRequestedDevelopmentFixes (TestContext& context)
             "Phase Distortion leaves a delayed click after release");
     }
 }
+
+std::vector<float> renderSecondaryVariant (dd::Parameters parameters)
+{
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    std::vector<float> result;
+    double phase = 0.0;
+    for (int block = 0; block < 28; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto time = phase++ / sampleRate;
+            buffer.setSample (0, sample, static_cast<float> (
+                0.42 * std::sin (
+                    juce::MathConstants<double>::twoPi * 173.0 * time)
+                + 0.11 * std::sin (
+                    juce::MathConstants<double>::twoPi * 1753.0 * time)));
+        }
+        engine.process (buffer, parameters);
+        if (block >= 20)
+            result.insert (
+                result.end(),
+                buffer.getReadPointer (0),
+                buffer.getReadPointer (0) + blockSize);
+    }
+    return result;
+}
+
+double normalisedRenderDistance (const std::vector<float>& first,
+                                 const std::vector<float>& second)
+{
+    double differenceEnergy = 0.0;
+    double referenceEnergy = 0.0;
+    for (size_t index = 0; index < juce::jmin (first.size(), second.size()); ++index)
+    {
+        const auto difference = static_cast<double> (first[index] - second[index]);
+        differenceEnergy += difference * difference;
+        referenceEnergy += static_cast<double> (first[index]) * first[index];
+    }
+    return std::sqrt (
+        differenceEnergy / juce::jmax (1.0e-12, referenceEnergy));
+}
+
+void testSecondaryToneControlsAndSineRelease (TestContext& context)
+{
+    dd::Parameters parameters;
+    parameters.driveDb = 24.0f;
+    parameters.character = 0.72f;
+    parameters.stages = 2;
+    parameters.autoGainMode = 0;
+
+    const auto expectSecondaryChange = [&] (
+        dd::DistortionEngine::Mode mode,
+        auto setMinimum,
+        auto setMaximum,
+        const juce::String& name)
+    {
+        parameters.mode = static_cast<int> (mode);
+        auto minimum = parameters;
+        auto maximum = parameters;
+        setMinimum (minimum);
+        setMaximum (maximum);
+        const auto distance = normalisedRenderDistance (
+            renderSecondaryVariant (minimum),
+            renderSecondaryVariant (maximum));
+        context.expect (
+            std::isfinite (distance) && distance > 0.025,
+            name + " secondary slider has too little audible effect ("
+                + juce::String (distance, 4) + ")");
+    };
+
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::tapeHysteresis,
+        [] (dd::Parameters& p) { p.tapeBias = 0.5f; },
+        [] (dd::Parameters& p) { p.tapeBias = 1.0f; },
+        "Tape Bias");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::transformerCore,
+        [] (dd::Parameters& p) { p.transformerAirGap = 0.0f; },
+        [] (dd::Parameters& p) { p.transformerAirGap = 1.0f; },
+        "Transformer Air Gap");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::downsample,
+        [] (dd::Parameters& p) { p.downsampleJitter = 0.0f; },
+        [] (dd::Parameters& p) { p.downsampleJitter = 1.0f; },
+        "Downsample Jitter");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::bitCrusher,
+        [] (dd::Parameters& p) { p.bitCrusherDither = 0.0f; },
+        [] (dd::Parameters& p) { p.bitCrusherDither = 1.0f; },
+        "Bit Crusher Dither");
+    expectSecondaryChange (
+        dd::DistortionEngine::Mode::schmittHysteresis,
+        [] (dd::Parameters& p) { p.schmittSlew = 0.0f; },
+        [] (dd::Parameters& p) { p.schmittSlew = 1.0f; },
+        "Schmitt Slew");
+
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+    dd::Parameters sine;
+    sine.mode = static_cast<int> (dd::DistortionEngine::Mode::sineErosion);
+    sine.driveDb = 36.0f;
+    sine.character = 0.35f;
+    sine.stages = 4;
+    sine.autoGainMode = 0;
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    double phase = 0.0;
+    float previous = 0.0f;
+    auto steadyMaximumJump = 0.0f;
+    for (int block = 0; block < 20; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 55.0
+                    * phase++ / sampleRate));
+            buffer.setSample (0, sample, value);
+        }
+        engine.process (buffer, sine);
+        if (block >= 16)
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                steadyMaximumJump = juce::jmax (
+                    steadyMaximumJump, std::abs (value - previous));
+                previous = value;
+            }
+        previous = buffer.getSample (0, blockSize - 1);
+    }
+
+    sine.driveDb = 0.0f;
+    auto maximumJump = 0.0f;
+    for (int block = 0; block < 8; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+            buffer.setSample (0, sample, 0.25118864f * static_cast<float> (
+                std::sin (
+                    juce::MathConstants<double>::twoPi * 55.0
+                    * phase++ / sampleRate)));
+        engine.process (buffer, sine);
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            const auto value = buffer.getSample (0, sample);
+            maximumJump = juce::jmax (maximumJump, std::abs (value - previous));
+            previous = value;
+        }
+    }
+    context.expect (
+        maximumJump <= steadyMaximumJump * 1.15f + 0.01f,
+        "Sine Erosion Drive release clicks (maximum adjacent jump "
+            + juce::String (maximumJump, 4)
+            + ", steady-state maximum "
+            + juce::String (steadyMaximumJump, 4) + ")");
+}
 } // namespace
 
 static void dumpAutoGainTable()
@@ -2430,6 +2670,108 @@ static void dumpSineErosionAutoGainTable()
     std::cout << "};\n} // namespace dd::sine_erosion_auto_gain_table\n";
 }
 
+static void dumpSecondaryAutoGainTable()
+{
+    constexpr std::array<int, 5> modes {
+        static_cast<int> (dd::DistortionEngine::Mode::tapeHysteresis),
+        static_cast<int> (dd::DistortionEngine::Mode::transformerCore),
+        static_cast<int> (dd::DistortionEngine::Mode::downsample),
+        static_cast<int> (dd::DistortionEngine::Mode::bitCrusher),
+        static_cast<int> (dd::DistortionEngine::Mode::schmittHysteresis)
+    };
+    constexpr std::array<double, 4> rates {
+        44100.0, 48000.0, 96000.0, 192000.0
+    };
+    constexpr std::array<float, 5> drives {
+        0.0f, 9.0f, 18.0f, 27.0f, 36.0f
+    };
+    constexpr std::array<float, 5> characters {
+        0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+    constexpr std::array<float, 7> asymmetries {
+        -1.0f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 1.0f
+    };
+    constexpr std::array<float, 5> secondaryValues {
+        0.0f, 0.25f, 0.5f, 0.75f, 1.0f
+    };
+
+    std::cout
+        << "#pragma once\n\n"
+        << "#include <array>\n\n"
+        << "namespace dd::secondary_auto_gain_table\n{\n"
+        << "inline constexpr std::array<int, 5> modes { "
+        << "5, 13, 21, 22, 26 };\n"
+        << "inline constexpr std::array<double, 4> sampleRates { "
+        << "44100.0, 48000.0, 96000.0, 192000.0 };\n"
+        << "inline constexpr std::array<float, 5> drives { "
+        << "0.0f, 9.0f, 18.0f, 27.0f, 36.0f };\n"
+        << "inline constexpr std::array<float, 5> characters { "
+        << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, 7> asymmetries { "
+        << "-1.0f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 1.0f };\n"
+        << "inline constexpr std::array<float, 5> secondaryValues { "
+        << "0.0f, 0.25f, 0.5f, 0.75f, 1.0f };\n"
+        << "inline constexpr std::array<float, "
+        << modes.size() * rates.size()
+            * dd::DistortionEngine::maximumStages
+            * asymmetries.size() * characters.size()
+            * secondaryValues.size() * drives.size()
+        << "> gains {\n"
+        << std::showpoint << std::setprecision (9);
+
+    int valuesOnLine = 0;
+    for (const auto mode : modes)
+        for (const auto rate : rates)
+            for (int stages = 1;
+                 stages <= dd::DistortionEngine::maximumStages;
+                 ++stages)
+                for (const auto asymmetry : asymmetries)
+                    for (const auto character : characters)
+                        for (const auto secondary : secondaryValues)
+                            for (const auto drive : drives)
+                            {
+                                dd::Parameters parameters;
+                                parameters.mode = mode;
+                                parameters.driveDb = drive;
+                                parameters.character = character;
+                                parameters.asymmetry = asymmetry;
+                                parameters.stages = stages;
+                                if (mode == static_cast<int> (
+                                        dd::DistortionEngine::Mode::tapeHysteresis))
+                                    parameters.tapeBias = secondary;
+                                else if (mode == static_cast<int> (
+                                             dd::DistortionEngine::Mode::transformerCore))
+                                    parameters.transformerAirGap = secondary;
+                                else if (mode == static_cast<int> (
+                                             dd::DistortionEngine::Mode::downsample))
+                                    parameters.downsampleJitter = secondary;
+                                else if (mode == static_cast<int> (
+                                             dd::DistortionEngine::Mode::bitCrusher))
+                                    parameters.bitCrusherDither = secondary;
+                                else
+                                    parameters.schmittSlew = secondary;
+                                const auto gain =
+                                    dd::DistortionEngine::calculateReferenceAutoGain (
+                                        parameters, rate);
+                                if (valuesOnLine == 0)
+                                    std::cout << "    ";
+                                std::cout << gain << "f,";
+                                ++valuesOnLine;
+                                if (valuesOnLine >= 8)
+                                {
+                                    std::cout << '\n';
+                                    valuesOnLine = 0;
+                                }
+                                else
+                                {
+                                    std::cout << ' ';
+                                }
+                            }
+    if (valuesOnLine != 0)
+        std::cout << '\n';
+    std::cout << "};\n} // namespace dd::secondary_auto_gain_table\n";
+}
+
 int main (int argc, char** argv)
 {
     if (argc > 1 && juce::String (argv[1]) == "--dump-regression")
@@ -2454,6 +2796,12 @@ int main (int argc, char** argv)
         dumpSineErosionAutoGainTable();
         return 0;
     }
+    if (argc > 1 && juce::String (argv[1])
+            == "--dump-secondary-auto-gain-table")
+    {
+        dumpSecondaryAutoGainTable();
+        return 0;
+    }
 
     TestContext context;
     testModeMetadata (context);
@@ -2469,6 +2817,7 @@ int main (int argc, char** argv)
     testAutoGainForEveryMode (context);
     testSpectralClipAutoGain (context);
     testSineErosionWaveAutoGain (context);
+    testSecondaryControlAutoGain (context);
     testEveryCharacterHasARealVisualization (context);
     testDownsampleExtreme (context);
     testModesArePairwiseDistinct (context);
@@ -2482,6 +2831,7 @@ int main (int argc, char** argv)
     testNewTopologyAndSafetyInvariants (context);
     testRevisedAlgorithmContracts (context);
     testRequestedDevelopmentFixes (context);
+    testSecondaryToneControlsAndSineRelease (context);
     testOutputCeilingAtZeroDb (context);
     testInstantTableAutoGain (context);
 

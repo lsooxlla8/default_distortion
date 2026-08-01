@@ -52,6 +52,7 @@ target_sources(DefaultDistortion
         Source/DistortionEngine.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
+        Source/SecondaryAutoGainTable.h
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
         Source/PluginEditor.cpp
@@ -103,6 +104,7 @@ target_sources(DefaultDistortionTests
         Source/DistortionEngine.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
+        Source/SecondaryAutoGainTable.h
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
         Tests/DspTests.cpp

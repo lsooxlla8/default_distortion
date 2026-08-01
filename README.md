@@ -61,6 +61,11 @@ Sine Erosion adds a secondary Wave control that morphs its delay modulator
 from a sine oscillator to band-pass-filtered pink noise. Character controls
 the oscillator or filter centre frequency on a 0 Hz to 10 kHz nonlinear scale.
 
+Five other algorithms expose the same compact secondary slider when selected:
+Tape Hysteresis — Bias, Transformer Core — Air Gap, Downsample — Jitter,
+Bit Crusher — Dither, and Schmitt Hysteresis — Slew. Each value is stored and
+automatable independently; switching algorithms does not overwrite it.
+
 ## Build
 
 ```sh
