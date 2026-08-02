@@ -64,6 +64,8 @@ double measureMultibandReconstructionGain (double rate,
     constexpr int testBlockSize = 256;
     dd::MultibandProcessor processor;
     processor.prepare (rate, testBlockSize, 2);
+    if (linearPhase)
+        juce::Thread::sleep (100);
     dd::Parameters master;
     master.autoGainMode = 0;
     master.outputDb = 0.01f;
@@ -178,6 +180,7 @@ void testMultibandCrossoversAndSmartGain (TestContext& context)
 
     dd::MultibandProcessor linear;
     linear.prepare (sampleRate, 256, 2);
+    juce::Thread::sleep (100);
     master.autoGainMode = 0;
     master.outputDb = 0.0f;
     multiband.phaseMode = 1;
