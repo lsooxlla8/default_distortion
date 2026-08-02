@@ -479,6 +479,8 @@ struct LinearPhaseBank : private juce::Thread
         juce::dsp::FFT fft { fftOrder };
         std::vector<juce::dsp::Complex<float>> data (
             static_cast<size_t> (fftSize), { 0.0f, 0.0f });
+        std::vector<juce::dsp::Complex<float>> timeDomain (
+            static_cast<size_t> (fftSize), { 0.0f, 0.0f });
         const auto exponent = static_cast<float> (
             MultibandProcessor::slopeDecibelsPerOctave (slopeIndex)) / 6.0f;
         for (int bin = 0; bin <= fftSize / 2; ++bin)
@@ -493,7 +495,7 @@ struct LinearPhaseBank : private juce::Thread
                     magnitude, 0.0f
                 };
         }
-        fft.perform (data.data(), data.data(), true);
+        fft.perform (data.data(), timeDomain.data(), true);
 
         juce::AudioBuffer<float> impulse (1, length);
         const auto centre = (length - 1) / 2;
@@ -504,7 +506,9 @@ struct LinearPhaseBank : private juce::Thread
                 juce::MathConstants<float>::twoPi * static_cast<float> (tap)
                 / static_cast<float> (length - 1));
             impulse.setSample (
-                0, tap, data[static_cast<size_t> (source)].real() * window);
+                0,
+                tap,
+                timeDomain[static_cast<size_t> (source)].real() * window);
         }
         return impulse;
     }
