@@ -2020,9 +2020,9 @@ void DefaultDistortionAudioProcessorEditor::resized()
     asymStereoButton.setBounds (scaled (370, 107, 32, 69));
     tone.setBounds (scaled (414, 78, 100, controlHeight));
     stages.setBounds (scaled (14, 212, controlWidth, controlHeight));
-    output.setBounds (scaled (143, 212, controlWidth, controlHeight));
-    quality.setBounds (scaled (272, 212, controlWidth, controlHeight));
-    mix.setBounds (scaled (401, 212, controlWidth, controlHeight));
+    mix.setBounds (scaled (143, 212, controlWidth, controlHeight));
+    output.setBounds (scaled (272, 212, controlWidth, controlHeight));
+    quality.setBounds (scaled (401, 212, controlWidth, controlHeight));
 
     responseDisplay.setBounds (scaled (544, 78, 302, 218));
     multibandButton.setBounds (scaled (544, 304, 302, 36));

@@ -224,6 +224,51 @@ void testMultibandCrossoversAndSmartGain (TestContext& context)
         "Linear-phase bands do not null against the delayed input: "
             + juce::String (nullDb) + " dB");
 
+    dd::MultibandProcessor deltaProcessor;
+    deltaProcessor.prepare (sampleRate, 256, 2);
+    dd::Parameters deltaMaster;
+    deltaMaster.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::deltaCrusher);
+    deltaMaster.driveDb = 36.0f;
+    deltaMaster.character = 1.0f;
+    deltaMaster.stages = 1;
+    deltaMaster.autoGainMode = 0;
+    deltaMaster.outputDb = 0.01f;
+    dd::MultibandParameters deltaMultiband;
+    deltaMultiband.enabled = true;
+    deltaMultiband.linked = true;
+    deltaMultiband.bandCount = 4;
+    juce::AudioBuffer<float> deltaBuffer (2, 256);
+    auto maximumChannelDifference = 0.0f;
+    double deltaPhase = 0.0;
+    for (int block = 0; block < 96; ++block)
+    {
+        for (int sample = 0; sample < deltaBuffer.getNumSamples(); ++sample)
+        {
+            const auto value = 0.25f * static_cast<float> (
+                std::sin (deltaPhase));
+            deltaPhase += juce::MathConstants<double>::twoPi * 173.0
+                / sampleRate;
+            deltaBuffer.setSample (0, sample, value);
+            deltaBuffer.setSample (
+                1, sample, block < 24 ? -0.83f * value : value);
+        }
+        deltaProcessor.process (
+            deltaBuffer, deltaMaster, deltaMultiband, -1);
+        if (block >= 24)
+            for (int sample = 0; sample < deltaBuffer.getNumSamples(); ++sample)
+                maximumChannelDifference = juce::jmax (
+                    maximumChannelDifference,
+                    std::abs (
+                        deltaBuffer.getSample (0, sample)
+                        - deltaBuffer.getSample (1, sample)));
+    }
+    context.expect (
+        maximumChannelDifference < 1.0e-7f,
+        "Multiband Delta Crusher turns identical mono input into stereo "
+            "(maximum L/R difference "
+            + juce::String (maximumChannelDifference, 8) + ")");
+
     dd::MultibandProcessor automated;
     automated.prepare (sampleRate, 256, 2);
     multiband.phaseMode = 0;
@@ -1596,12 +1641,16 @@ struct TapeSteadyStateMetrics
     double mean = 0.0;
     double acRms = 0.0;
     double cycleError = 0.0;
+    double positivePeak = 0.0;
+    double negativePeak = 0.0;
     bool finite = true;
 };
 
 TapeSteadyStateMetrics measureTapeSteadyState (float hysteresis,
                                                 float bias,
-                                                int stages)
+                                                int stages,
+                                                float driveDb = 36.0f,
+                                                bool autoGain = false)
 {
     constexpr int tapeBlockSize = 480;
     constexpr int periodSamples = 48;
@@ -1611,7 +1660,7 @@ TapeSteadyStateMetrics measureTapeSteadyState (float hysteresis,
     dd::Parameters parameters;
     parameters.mode = static_cast<int> (
         dd::DistortionEngine::Mode::tapeHysteresis);
-    parameters.driveDb = 36.0f;
+    parameters.driveDb = driveDb;
     parameters.character = hysteresis;
     parameters.secondary = bias;
     parameters.asymmetry = 0.0f;
@@ -1619,7 +1668,8 @@ TapeSteadyStateMetrics measureTapeSteadyState (float hysteresis,
     parameters.mix = 1.0f;
     parameters.outputDb = 0.01f;
     parameters.quality = 1;
-    parameters.autoGainMode = 0;
+    parameters.autoGainMode = autoGain ? 1 : 0;
+    engine.primeAutoGain (parameters);
 
     juce::AudioBuffer<float> buffer (1, tapeBlockSize);
     std::array<float, tapeBlockSize> captured {};
@@ -1648,6 +1698,10 @@ TapeSteadyStateMetrics measureTapeSteadyState (float hysteresis,
     {
         result.finite = result.finite && std::isfinite (value);
         result.mean += value;
+        result.positivePeak = juce::jmax (
+            result.positivePeak, static_cast<double> (value));
+        result.negativePeak = juce::jmax (
+            result.negativePeak, -static_cast<double> (value));
     }
     result.mean /= static_cast<double> (captured.size());
     for (const auto value : captured)
@@ -1724,6 +1778,41 @@ void testTapeDoesNotCollapseOrModulate (TestContext& context)
         std::abs (referenceCascade.acRms - 1.188) < 0.025,
         "Tape stages no longer retain the inter-stage CHOW oversampling "
         "response (RMS " + juce::String (referenceCascade.acRms, 4) + ")");
+
+    const auto defaultDry = measureTapeSteadyState (
+        0.5f, 0.5f, 1, 0.0f, false);
+    const auto halfDbDry = measureTapeSteadyState (
+        0.5f, 0.5f, 1, 0.5f, false);
+    const auto defaultAuto = measureTapeSteadyState (
+        0.5f, 0.5f, 1, 0.0f, true);
+    constexpr auto inputRms = 0.35 / 1.4142135623730951;
+    const auto firstHalfDbJump = 20.0 * std::log10 (
+        juce::jmax (1.0e-12, halfDbDry.acRms)
+        / juce::jmax (1.0e-12, defaultDry.acRms));
+    const auto autoGainError = 20.0 * std::log10 (
+        juce::jmax (1.0e-12, defaultAuto.acRms) / inputRms);
+    const auto peakImbalance = std::abs (
+        defaultDry.positivePeak - defaultDry.negativePeak)
+        / juce::jmax (
+            1.0e-12,
+            juce::jmax (
+                defaultDry.positivePeak, defaultDry.negativePeak));
+    context.expect (
+        defaultDry.acRms >= 0.5 * inputRms,
+        "Default Tape collapses when Auto Gain is disabled (RMS "
+            + juce::String (defaultDry.acRms, 5) + ")");
+    context.expect (
+        std::abs (firstHalfDbJump) <= 1.0,
+        "Default Tape level jumps within the first 0.5 dB of Drive ("
+            + juce::String (firstHalfDbJump, 2) + " dB)");
+    context.expect (
+        peakImbalance <= 0.05,
+        "Default Tape creates an imbalanced positive/negative waveform ("
+            + juce::String (100.0 * peakImbalance, 2) + "%)");
+    context.expect (
+        std::abs (autoGainError) <= 1.0,
+        "Default Tape Auto Gain misses the dry RMS by "
+            + juce::String (autoGainError, 2) + " dB");
 }
 
 double measureAliasComponent (int oversampling)

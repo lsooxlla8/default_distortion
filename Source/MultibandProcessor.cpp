@@ -2,6 +2,7 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -1074,6 +1075,24 @@ struct MultibandProcessor::Impl
         const auto activeBands = juce::jlimit (2, maximumBands, multiband.bandCount);
         const auto samples = buffer.getNumSamples();
         const auto activeChannels = buffer.getNumChannels();
+        auto preserveDualMono = activeChannels == 2;
+        if (preserveDualMono)
+        {
+            const auto stereoAsymmetryEnabled = multiband.linked
+                ? master.asymmetryStereo
+                : std::any_of (
+                    multiband.bands.begin(),
+                    multiband.bands.begin() + activeBands,
+                    [] (const BandParameters& band)
+                    {
+                        return band.saturation.asymmetryStereo;
+                    });
+            preserveDualMono = ! stereoAsymmetryEnabled;
+            for (int sample = 0; preserveDualMono && sample < samples; ++sample)
+                preserveDualMono = std::abs (
+                    buffer.getSample (0, sample)
+                    - buffer.getSample (1, sample)) <= 1.0e-7f;
+        }
         dryReference.setSize (activeChannels, samples, false, false, true);
         dryReference.makeCopyOf (buffer, true);
         for (int band = 0; band < activeBands; ++band)
@@ -1114,6 +1133,13 @@ struct MultibandProcessor::Impl
                 for (int channel = 0; channel < activeChannels; ++channel)
                     buffer.addFrom (channel, 0, bands[index], channel, 0, samples);
         }
+
+        // Stateful quantizers can retain different error histories after a
+        // preceding stereo passage. Do not let those hidden histories turn a
+        // subsequently dual-mono source into stereo unless Stereo Asymmetry
+        // explicitly requests channel-dependent processing.
+        if (preserveDualMono)
+            buffer.copyFrom (1, 0, buffer, 0, 0, samples);
 
         const auto totalLatency = bandLatency
             + (multiband.phaseMode == 0 ? 0 : linearBank.groupDelay);

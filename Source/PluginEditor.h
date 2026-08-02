@@ -61,7 +61,7 @@ public:
 
 private:
     void applyPalette();
-    bool inverted = false;
+    bool inverted = true;
     float uiScale = 1.0f;
 };
 

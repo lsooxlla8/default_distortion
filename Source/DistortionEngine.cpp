@@ -1824,14 +1824,23 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
             break;
 
         case Mode::tapeHysteresis:
+        {
+            // CHOW's Tape Drive is a unitless model coefficient whose normal
+            // operating point is 0.5. Mapping our shared 0...36 dB control to
+            // the unstable 0...1 endpoint range made the first fraction of a
+            // decibel jump by nearly 20 dB and left the zero position almost
+            // silent. Keep the original default at our zero and use its
+            // musically useful upper half for increasing Drive.
+            const auto tapeDrive = 0.5f + 0.5f * drive;
             context.tapeModel = chowtape::makeModel (
-                drive,
+                tapeDrive,
                 c01,
                 1.0f - context.secondaryParameter);
             context.tapeIntegration =
                 chowtape::detail::makeIntegrationCoefficients (
                     processingSampleRate);
             break;
+        }
 
         case Mode::transformerCore:
         {
