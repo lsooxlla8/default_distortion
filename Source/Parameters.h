@@ -2,6 +2,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include <array>
+
 namespace dd
 {
 namespace ParamIDs
@@ -18,6 +20,25 @@ inline constexpr auto mix = "mix";
 inline constexpr auto output = "output";
 inline constexpr auto quality = "quality";
 inline constexpr auto autoGain = "autoGain";
+inline constexpr auto multibandEnabled = "multibandEnabled";
+inline constexpr auto multibandLink = "multibandLink";
+inline constexpr auto multibandBandCount = "multibandBandCount";
+inline constexpr auto multibandPhase = "multibandPhase";
+
+inline juce::String crossoverFrequency (int crossover)
+{
+    return "crossover" + juce::String (crossover + 1) + "Frequency";
+}
+
+inline juce::String crossoverSlope (int crossover)
+{
+    return "crossover" + juce::String (crossover + 1) + "Slope";
+}
+
+inline juce::String band (int bandIndex, const char* suffix)
+{
+    return "band" + juce::String (bandIndex + 1) + suffix;
+}
 } // namespace ParamIDs
 
 struct Parameters
@@ -34,5 +55,30 @@ struct Parameters
     float outputDb = 0.0f;
     int quality = 0;
     int autoGainMode = 1;
+};
+
+struct BandParameters
+{
+    Parameters saturation;
+    bool bypass = false;
+    float trimDb = 0.0f;
+};
+
+struct MultibandParameters
+{
+    static constexpr int maximumBands = 4;
+    static constexpr int maximumCrossovers = maximumBands - 1;
+
+    bool enabled = false;
+    bool linked = true;
+    int bandCount = 2;
+    int phaseMode = 0;
+    std::array<float, maximumCrossovers> crossoverHz {
+        120.0f, 1000.0f, 5000.0f
+    };
+    std::array<int, maximumCrossovers> crossoverSlope {
+        2, 2, 2
+    };
+    std::array<BandParameters, maximumBands> bands {};
 };
 } // namespace dd

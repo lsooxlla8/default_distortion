@@ -1,8 +1,10 @@
 #include "../Source/DistortionEngine.h"
+#include "../Source/MultibandProcessor.h"
 
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -51,6 +53,260 @@ void fillSignal (juce::AudioBuffer<float>& buffer, double& phase)
                 static_cast<float> (value * (channel == 0 ? 1.0 : 0.87)));
         phase += 1.0;
     }
+}
+
+double measureMultibandReconstructionGain (double rate,
+                                           int bandCount,
+                                           int slopeIndex,
+                                           bool linearPhase,
+                                           double frequency,
+                                           TestContext& context)
+{
+    constexpr int testBlockSize = 256;
+    dd::MultibandProcessor processor;
+    processor.prepare (rate, testBlockSize, 2);
+    dd::Parameters master;
+    master.autoGainMode = 0;
+    master.outputDb = 0.01f;
+    dd::MultibandParameters multiband;
+    multiband.enabled = true;
+    multiband.linked = false;
+    multiband.bandCount = bandCount;
+    multiband.phaseMode = linearPhase ? 1 : 0;
+    multiband.crossoverHz = { 120.0f, 1000.0f, 5000.0f };
+    multiband.crossoverSlope.fill (slopeIndex);
+    for (auto& band : multiband.bands)
+        band.bypass = true;
+
+    juce::AudioBuffer<float> buffer (2, testBlockSize);
+    double phase = 0.0;
+    double inputEnergy = 0.0;
+    double outputEnergy = 0.0;
+    const auto warmupBlocks = linearPhase ? 96 : 32;
+    constexpr int measuredBlocks = 48;
+    for (int block = 0; block < warmupBlocks + measuredBlocks; ++block)
+    {
+        for (int sample = 0; sample < testBlockSize; ++sample)
+        {
+            const auto value = 0.12f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * frequency / rate;
+            for (int channel = 0; channel < 2; ++channel)
+                buffer.setSample (channel, sample, value);
+            if (block >= warmupBlocks)
+                inputEnergy += static_cast<double> (value) * value * 2.0;
+        }
+        processor.process (buffer, master, multiband, -1);
+        if (block >= warmupBlocks)
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < testBlockSize; ++sample)
+                {
+                    const auto value = buffer.getSample (channel, sample);
+                    context.expect (
+                        std::isfinite (value),
+                        "Multiband reconstruction produced a non-finite sample");
+                    outputEnergy += static_cast<double> (value) * value;
+                }
+    }
+    return std::sqrt (outputEnergy / juce::jmax (1.0e-20, inputEnergy));
+}
+
+void testMultibandCrossoversAndSmartGain (TestContext& context)
+{
+    constexpr std::array<double, 3> rates { 44100.0, 48000.0, 96000.0 };
+    constexpr std::array<double, 5> frequencies {
+        55.0, 240.0, 1500.0, 6500.0, 14000.0
+    };
+    for (const auto rate : rates)
+        for (int bands = 2; bands <= 4; ++bands)
+            for (int slope = 0; slope < 5; ++slope)
+                for (const auto frequency : frequencies)
+                {
+                    if (frequency >= 0.4 * rate)
+                        continue;
+                    const auto gain = measureMultibandReconstructionGain (
+                        rate, bands, slope, false, frequency, context);
+                    context.expect (
+                        gain > 0.975 && gain < 1.025,
+                        "Minimum-phase reconstruction gain is not flat at "
+                            + juce::String (frequency)
+                            + " Hz, " + juce::String (bands)
+                            + " bands, "
+                            + juce::String (
+                                dd::MultibandProcessor::slopeDecibelsPerOctave (
+                                    slope))
+                            + " dB/oct: " + juce::String (gain));
+                }
+
+    for (const auto bands : { 2, 4 })
+        for (const auto frequency : { 55.0, 1500.0, 10000.0 })
+        {
+            const auto gain = measureMultibandReconstructionGain (
+                48000.0, bands, 2, true, frequency, context);
+            context.expect (
+                gain > 0.97 && gain < 1.03,
+                "Linear-phase complementary reconstruction is not unity at "
+                    + juce::String (frequency) + " Hz, "
+                    + juce::String (bands) + " bands: "
+                    + juce::String (gain));
+        }
+
+    dd::MultibandProcessor processor;
+    processor.prepare (sampleRate, 256, 2);
+    context.expect (
+        processor.getLatencySamples (true)
+            > processor.getLatencySamples (false),
+        "Linear phase does not report additional latency");
+    dd::Parameters master;
+    master.autoGainMode = 2;
+    master.outputDb = 0.01f;
+    dd::MultibandParameters multiband;
+    multiband.enabled = true;
+    multiband.linked = false;
+    multiband.bandCount = 4;
+    for (auto& band : multiband.bands)
+        band.bypass = true;
+    juce::AudioBuffer<float> buffer (2, 256);
+    double phase = 0.0;
+    for (int block = 0; block < 220; ++block)
+    {
+        fillSignal (buffer, phase);
+        processor.process (buffer, master, multiband, -1);
+    }
+    context.expect (
+        processor.isSmartAutoGainLocked()
+            && processor.getSmartAutoGainProgress() >= 0.999f,
+        "Multiband Smart Auto Gain did not lock on the summed signal");
+
+    dd::MultibandProcessor linear;
+    linear.prepare (sampleRate, 256, 2);
+    master.autoGainMode = 0;
+    master.outputDb = 0.0f;
+    multiband.phaseMode = 1;
+    const auto latency = linear.getLatencySamples (true);
+    std::vector<float> inputHistory;
+    std::vector<float> outputHistory;
+    inputHistory.reserve (256 * 160);
+    outputHistory.reserve (256 * 160);
+    std::uint32_t noise = UINT32_C (0x13579bdf);
+    for (int block = 0; block < 160; ++block)
+    {
+        for (int sample = 0; sample < 256; ++sample)
+        {
+            noise = noise * UINT32_C (1664525) + UINT32_C (1013904223);
+            const auto value = 0.05f
+                * (2.0f * static_cast<float> (noise & UINT32_C (0x00ffffff))
+                    / static_cast<float> (UINT32_C (0x00ffffff)) - 1.0f);
+            inputHistory.push_back (value);
+            buffer.setSample (0, sample, value);
+            buffer.setSample (1, sample, value);
+        }
+        linear.process (buffer, master, multiband, -1);
+        for (int sample = 0; sample < 256; ++sample)
+            outputHistory.push_back (buffer.getSample (0, sample));
+    }
+    double referenceEnergy = 0.0;
+    double errorEnergy = 0.0;
+    const auto start = juce::jmax (latency + 4096, 12000);
+    for (int sample = start;
+         sample < static_cast<int> (outputHistory.size());
+         ++sample)
+    {
+        const auto reference = inputHistory[static_cast<size_t> (sample - latency)];
+        const auto error = outputHistory[static_cast<size_t> (sample)] - reference;
+        referenceEnergy += static_cast<double> (reference) * reference;
+        errorEnergy += static_cast<double> (error) * error;
+    }
+    const auto nullDb = 10.0 * std::log10 (
+        juce::jmax (1.0e-30, errorEnergy)
+        / juce::jmax (1.0e-30, referenceEnergy));
+    context.expect (
+        nullDb < -70.0,
+        "Linear-phase bands do not null against the delayed input: "
+            + juce::String (nullDb) + " dB");
+
+    dd::MultibandProcessor deltaProcessor;
+    deltaProcessor.prepare (sampleRate, 256, 2);
+    dd::Parameters deltaMaster;
+    deltaMaster.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::deltaCrusher);
+    deltaMaster.driveDb = 36.0f;
+    deltaMaster.character = 1.0f;
+    deltaMaster.stages = 1;
+    deltaMaster.autoGainMode = 0;
+    deltaMaster.outputDb = 0.01f;
+    dd::MultibandParameters deltaMultiband;
+    deltaMultiband.enabled = true;
+    deltaMultiband.linked = true;
+    deltaMultiband.bandCount = 4;
+    juce::AudioBuffer<float> deltaBuffer (2, 256);
+    auto maximumChannelDifference = 0.0f;
+    double deltaPhase = 0.0;
+    for (int block = 0; block < 96; ++block)
+    {
+        for (int sample = 0; sample < deltaBuffer.getNumSamples(); ++sample)
+        {
+            const auto value = 0.25f * static_cast<float> (
+                std::sin (deltaPhase));
+            deltaPhase += juce::MathConstants<double>::twoPi * 173.0
+                / sampleRate;
+            deltaBuffer.setSample (0, sample, value);
+            deltaBuffer.setSample (
+                1, sample, block < 24 ? -0.83f * value : value);
+        }
+        deltaProcessor.process (
+            deltaBuffer, deltaMaster, deltaMultiband, -1);
+        if (block >= 24)
+            for (int sample = 0; sample < deltaBuffer.getNumSamples(); ++sample)
+                maximumChannelDifference = juce::jmax (
+                    maximumChannelDifference,
+                    std::abs (
+                        deltaBuffer.getSample (0, sample)
+                        - deltaBuffer.getSample (1, sample)));
+    }
+    context.expect (
+        maximumChannelDifference < 1.0e-7f,
+        "Multiband Delta Crusher turns identical mono input into stereo "
+            "(maximum L/R difference "
+            + juce::String (maximumChannelDifference, 8) + ")");
+
+    dd::MultibandProcessor automated;
+    automated.prepare (sampleRate, 256, 2);
+    multiband.phaseMode = 0;
+    multiband.bandCount = 4;
+    multiband.crossoverSlope = { 0, 1, 4 };
+    double automationPhase = 0.0;
+    auto maximumMagnitude = 0.0f;
+    for (int block = 0; block < 180; ++block)
+    {
+        fillSignal (buffer, automationPhase);
+        const auto sweep = static_cast<float> (block % 30) / 29.0f;
+        multiband.crossoverHz = {
+            35.0f * std::pow (10.0f, sweep),
+            450.0f * std::pow (8.0f, 1.0f - sweep),
+            5200.0f + 6500.0f * sweep
+        };
+        if (block % 17 == 0)
+        {
+            multiband.bandCount = 2 + (block / 17) % 3;
+            for (auto& slope : multiband.crossoverSlope)
+                slope = (slope + 1) % 5;
+        }
+        automated.process (buffer, master, multiband, -1);
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+            for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            {
+                const auto value = buffer.getSample (channel, sample);
+                context.expect (
+                    std::isfinite (value),
+                    "Minimum-phase crossover automation produced NaN/Inf");
+                maximumMagnitude = juce::jmax (
+                    maximumMagnitude, std::abs (value));
+            }
+    }
+    context.expect (
+        maximumMagnitude < 8.0f,
+        "Minimum-phase crossover automation produced an unbounded transient: "
+            + juce::String (maximumMagnitude));
 }
 
 double processModeFingerprint (int mode, int stages, float tone, TestContext& context)
@@ -1310,6 +1566,253 @@ void testDigitalClockIgnoresOversampling (TestContext& context)
     context.expect (
         maximumDifference < 1.0e-7f,
         "Downsample clock changes when Oversampling is enabled");
+}
+
+double measureTapeRmsAtQuality (int quality, TestContext& context)
+{
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+
+    dd::Parameters parameters;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::tapeHysteresis);
+    parameters.driveDb = 36.0f;
+    parameters.character = 0.5f;
+    parameters.secondary = 0.5f;
+    parameters.asymmetry = 0.0f;
+    parameters.stages = 1;
+    parameters.mix = 1.0f;
+    parameters.outputDb = 0.01f;
+    parameters.quality = quality;
+    parameters.autoGainMode = 0;
+
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    double phase = 0.0;
+    double energy = 0.0;
+    int measuredSamples = 0;
+    constexpr int warmupBlocks = 48;
+    constexpr int measurementBlocks = 32;
+    for (int block = 0; block < warmupBlocks + measurementBlocks; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            buffer.setSample (
+                0,
+                sample,
+                0.35f * static_cast<float> (std::sin (phase)));
+            phase += juce::MathConstants<double>::twoPi
+                * 997.0 / sampleRate;
+        }
+        engine.process (buffer, parameters);
+        if (block >= warmupBlocks)
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                context.expect (
+                    std::isfinite (value),
+                    "Tape produced a non-finite sample at quality "
+                        + juce::String (quality));
+                energy += static_cast<double> (value) * value;
+                ++measuredSamples;
+            }
+    }
+    return std::sqrt (energy / juce::jmax (1, measuredSamples));
+}
+
+void testTapeOversamplingConsistency (TestContext& context)
+{
+    std::array<double, 4> rms {};
+    for (int quality = 0; quality < static_cast<int> (rms.size()); ++quality)
+        rms[static_cast<size_t> (quality)] =
+            measureTapeRmsAtQuality (quality, context);
+
+    const auto [minimum, maximum] = std::minmax_element (
+        rms.begin(), rms.end());
+    const auto spreadDb = 20.0 * std::log10 (
+        *maximum / juce::jmax (1.0e-12, *minimum));
+    context.expect (
+        std::isfinite (spreadDb) && spreadDb <= 1.0,
+        "Tape level changes too much across Oversampling settings ("
+            + juce::String (spreadDb, 2) + " dB)");
+}
+
+struct TapeSteadyStateMetrics
+{
+    double mean = 0.0;
+    double acRms = 0.0;
+    double cycleError = 0.0;
+    double positivePeak = 0.0;
+    double negativePeak = 0.0;
+    bool finite = true;
+};
+
+TapeSteadyStateMetrics measureTapeSteadyState (float hysteresis,
+                                                float bias,
+                                                int stages,
+                                                float driveDb = 36.0f,
+                                                bool autoGain = false)
+{
+    constexpr int tapeBlockSize = 480;
+    constexpr int periodSamples = 48;
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, tapeBlockSize, 1);
+
+    dd::Parameters parameters;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::tapeHysteresis);
+    parameters.driveDb = driveDb;
+    parameters.character = hysteresis;
+    parameters.secondary = bias;
+    parameters.asymmetry = 0.0f;
+    parameters.stages = stages;
+    parameters.mix = 1.0f;
+    parameters.outputDb = 0.01f;
+    parameters.quality = 1;
+    parameters.autoGainMode = autoGain ? 1 : 0;
+    engine.primeAutoGain (parameters);
+
+    juce::AudioBuffer<float> buffer (1, tapeBlockSize);
+    std::array<float, tapeBlockSize> captured {};
+    double phase = 0.0;
+    for (int block = 0; block < 160; ++block)
+    {
+        for (int sample = 0; sample < tapeBlockSize; ++sample)
+        {
+            buffer.setSample (
+                0,
+                sample,
+                0.35f * static_cast<float> (std::sin (phase)));
+            phase += juce::MathConstants<double>::twoPi
+                / static_cast<double> (periodSamples);
+        }
+        engine.process (buffer, parameters);
+        if (block == 159)
+            std::copy (
+                buffer.getReadPointer (0),
+                buffer.getReadPointer (0) + tapeBlockSize,
+                captured.begin());
+    }
+
+    TapeSteadyStateMetrics result;
+    for (const auto value : captured)
+    {
+        result.finite = result.finite && std::isfinite (value);
+        result.mean += value;
+        result.positivePeak = juce::jmax (
+            result.positivePeak, static_cast<double> (value));
+        result.negativePeak = juce::jmax (
+            result.negativePeak, -static_cast<double> (value));
+    }
+    result.mean /= static_cast<double> (captured.size());
+    for (const auto value : captured)
+    {
+        const auto centred = static_cast<double> (value) - result.mean;
+        result.acRms += centred * centred;
+    }
+    result.acRms = std::sqrt (
+        result.acRms / static_cast<double> (captured.size()));
+
+    double cycleDifference = 0.0;
+    for (int sample = tapeBlockSize - periodSamples;
+         sample < tapeBlockSize;
+         ++sample)
+    {
+        const auto difference = static_cast<double> (
+            captured[static_cast<size_t> (sample)]
+            - captured[static_cast<size_t> (sample - periodSamples)]);
+        cycleDifference += difference * difference;
+    }
+    result.cycleError = std::sqrt (
+        cycleDifference / static_cast<double> (periodSamples))
+        / juce::jmax (1.0e-12, result.acRms);
+    return result;
+}
+
+void testTapeDoesNotCollapseOrModulate (TestContext& context)
+{
+    const auto referenceModel = dd::chowtape::makeModel (
+        1.0, 1.0, 0.5);
+    context.expect (
+        std::abs (referenceModel.saturation - 0.5) < 1.0e-12
+            && std::abs (
+                referenceModel.domainScale - 0.5 / 6.01) < 1.0e-12
+            && std::abs (
+                referenceModel.reversibility
+                    - (std::sqrt (0.5) - 0.01)) < 1.0e-12
+            && std::abs (referenceModel.outputMakeup - 2.6) < 1.0e-12,
+        "Tape controls no longer map to the CHOW reference model");
+
+    for (const auto hysteresis : { 0.0f, 1.0f })
+        for (const auto bias : { 0.5f, 1.0f })
+            for (const auto stages : { 1, 8 })
+            {
+                const auto metrics = measureTapeSteadyState (
+                    hysteresis, bias, stages);
+                const auto description =
+                    " at Hysteresis " + juce::String (hysteresis)
+                    + ", Bias " + juce::String (bias)
+                    + ", Stages " + juce::String (stages);
+                context.expect (
+                    metrics.finite && metrics.acRms > 1.0e-3,
+                    "Tape collapsed to DC" + description);
+                context.expect (
+                    std::abs (metrics.mean)
+                        <= 0.1 * juce::jmax (1.0e-12, metrics.acRms),
+                    "Tape retained excessive DC" + description
+                        + " (DC/AC "
+                        + juce::String (
+                            std::abs (metrics.mean)
+                                / juce::jmax (1.0e-12, metrics.acRms),
+                            3)
+                        + ")");
+                context.expect (
+                    std::isfinite (metrics.cycleError)
+                        && metrics.cycleError < 0.01,
+                    "Tape has a non-periodic modulation component"
+                        + description + " (cycle error "
+                        + juce::String (metrics.cycleError, 4) + ")");
+            }
+
+    const auto referenceCascade = measureTapeSteadyState (1.0f, 0.5f, 8);
+    context.expect (
+        std::abs (referenceCascade.acRms - 1.188) < 0.025,
+        "Tape stages no longer retain the inter-stage CHOW oversampling "
+        "response (RMS " + juce::String (referenceCascade.acRms, 4) + ")");
+
+    const auto defaultDry = measureTapeSteadyState (
+        0.5f, 0.5f, 1, 0.0f, false);
+    const auto halfDbDry = measureTapeSteadyState (
+        0.5f, 0.5f, 1, 0.5f, false);
+    const auto defaultAuto = measureTapeSteadyState (
+        0.5f, 0.5f, 1, 0.0f, true);
+    constexpr auto inputRms = 0.35 / 1.4142135623730951;
+    const auto firstHalfDbJump = 20.0 * std::log10 (
+        juce::jmax (1.0e-12, halfDbDry.acRms)
+        / juce::jmax (1.0e-12, defaultDry.acRms));
+    const auto autoGainError = 20.0 * std::log10 (
+        juce::jmax (1.0e-12, defaultAuto.acRms) / inputRms);
+    const auto peakImbalance = std::abs (
+        defaultDry.positivePeak - defaultDry.negativePeak)
+        / juce::jmax (
+            1.0e-12,
+            juce::jmax (
+                defaultDry.positivePeak, defaultDry.negativePeak));
+    context.expect (
+        defaultDry.acRms >= 0.5 * inputRms,
+        "Default Tape collapses when Auto Gain is disabled (RMS "
+            + juce::String (defaultDry.acRms, 5) + ")");
+    context.expect (
+        std::abs (firstHalfDbJump) <= 1.0,
+        "Default Tape level jumps within the first 0.5 dB of Drive ("
+            + juce::String (firstHalfDbJump, 2) + " dB)");
+    context.expect (
+        peakImbalance <= 0.05,
+        "Default Tape creates an imbalanced positive/negative waveform ("
+            + juce::String (100.0 * peakImbalance, 2) + "%)");
+    context.expect (
+        std::abs (autoGainError) <= 1.0,
+        "Default Tape Auto Gain misses the dry RMS by "
+            + juce::String (autoGainError, 2) + " dB");
 }
 
 double measureAliasComponent (int oversampling)
@@ -2871,6 +3374,7 @@ int main (int argc, char** argv)
 
     TestContext context;
     testModeMetadata (context);
+    testMultibandCrossoversAndSmartGain (context);
     testCanonicalClipCeilings (context);
     testVitalClipTransfers (context);
     testClipMorphEndpointsAndHardPlateau (context);
@@ -2891,6 +3395,8 @@ int main (int argc, char** argv)
     testEveryModeAtMaximum (context);
     testDriveStartsContinuously (context);
     testDigitalClockIgnoresOversampling (context);
+    testTapeOversamplingConsistency (context);
+    testTapeDoesNotCollapseOrModulate (context);
     testOversamplingReducesAliasing (context);
     testSmartAutoGainFreezes (context);
     testStereoAsymmetryUsesOppositePolarities (context);

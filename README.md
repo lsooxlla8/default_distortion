@@ -1,17 +1,20 @@
 # default_distortion
 
-![default_distortion plug-in interface](docs/default_distortion-clean.png)
+![default_distortion plug-in interface](docs/default_distortion-multiband.png)
 
-~~I~~ ChatGPT made `default_distortion` because one day I had nothing to do
-and wanted a free, convenient everyday saturator. I used as much AI as
-possible and did nothing myself. It contains a bunch of the most default
-saturation algorithms that have already appeared absolutely everywhere. We
-even stole some of the code from other developers.*
+**default_distortion** is designed to be your ultimate go-to plugin whenever
+you need to clip, saturate, distort, or completely degrade your audio signal.
 
-Future plans: add a multiband mode.
+Packed with 30 classic saturation algorithms, it features a flexible
+multiband mode, oversampling, and a sleek, modern UI. Despite its powerful
+capabilities, the plugin is heavily optimized for CPU efficiency.
 
-\* In boring legal terms: copied or adapted code from open-source projects
-under their GPL-compatible licences.
+Take full control of your loudness with two distinct auto-gain modes:
+**Regular Auto Gain:** Automatically and independently compensates for volume
+changes (within each frequency band).
+**Smart Auto Gain:** Measures the LUFS difference of the complete, summed
+multiband signal, precisely matching the loudness right before the final
+Output stage.
 
 ## Thanks and third-party code
 

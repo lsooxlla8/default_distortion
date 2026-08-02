@@ -73,6 +73,8 @@ public:
     void primeAutoGain (const Parameters&);
     void reset();
     void process (juce::AudioBuffer<float>& buffer, const Parameters& parameters);
+    void processBand (juce::AudioBuffer<float>& buffer,
+                      const Parameters& parameters);
 
     [[nodiscard]] int getLatencySamples() const noexcept { return fixedLatencySamples; }
     [[nodiscard]] float getSmartAutoGainProgress() const noexcept
@@ -180,6 +182,9 @@ private:
         float driveNormalised = 0.0f;
         double processingSampleRate = 44100.0;
         double hostSampleRate = 44100.0;
+        bool tapeDcBlockerEnabled = true;
+        chowtape::Model tapeModel;
+        chowtape::detail::IntegrationCoefficients tapeIntegration;
         std::array<float, 8> coefficients {};
         std::array<int, 2> integers {};
     };
@@ -249,7 +254,10 @@ private:
                                 const Parameters& startParameters,
                                 const Parameters& endParameters,
                                 double processingSampleRate,
-                                double hostSampleRate);
+                                double hostSampleRate,
+                                int firstStage = 0,
+                                int stageCountOverride = -1,
+                                bool deferTapeDcBlocker = false);
     void processSpectralBlock (juce::AudioBuffer<float>&,
                                const Parameters& parameters);
     float processSpectralSample (float input,
@@ -283,7 +291,8 @@ private:
         float stageGain,
         float stageDepth,
         int stages,
-        std::array<StageState, maximumStages>& states);
+        std::array<StageState, maximumStages>& states,
+        int firstStage = 0);
 
     float delaySample (float input,
                        int channel,
@@ -315,6 +324,10 @@ private:
         int blockCount) noexcept;
     static float lookupDeterministicGain (
         const Parameters&, double sampleRate) noexcept;
+    void processInternal (juce::AudioBuffer<float>&,
+                          const Parameters&,
+                          bool allowSmartAutoGain,
+                          bool clampFinalOutput);
 
     double sampleRate = 44100.0;
     int preparedChannels = 2;
@@ -333,6 +346,9 @@ private:
     std::array<float, maximumChannels> dcMixState {};
 
     std::array<std::unique_ptr<Oversampler>, 3> oversamplers;
+    std::array<
+        std::array<std::unique_ptr<Oversampler>, maximumStages>,
+        3> tapeStageOversamplers;
     std::array<int, 3> oversamplingLatencies {};
 
     std::array<std::vector<float>, maximumChannels> dryDelayBuffers;
@@ -371,6 +387,7 @@ private:
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };
     std::uint64_t lastGainSignature = 0;
+    std::uint64_t lastGainLookupSignature = 0;
     std::uint64_t lastSmartGainSignature = 0;
     float lastToneCoefficientAmount = std::numeric_limits<float>::quiet_NaN();
     bool toneFiltersBypassed = true;

@@ -5,6 +5,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include <memory>
+#include <array>
 
 namespace dd
 {
@@ -60,7 +61,7 @@ public:
 
 private:
     void applyPalette();
-    bool inverted = false;
+    bool inverted = true;
     float uiScale = 1.0f;
 };
 
@@ -151,6 +152,68 @@ private:
     bool visualizationValid = false;
 };
 
+class TrimSlider final : public juce::Slider
+{
+public:
+    void paint (juce::Graphics&) override;
+    void lookAndFeelChanged() override;
+};
+
+class MultibandPanel final : public juce::Component,
+                             private juce::Timer
+{
+public:
+    explicit MultibandPanel (DefaultDistortionAudioProcessor&);
+    ~MultibandPanel() override;
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    static constexpr int fftOrder = 12;
+    static constexpr int fftSize = 1 << fftOrder;
+    void timerCallback() override;
+    void updateSpectrum();
+    void updateControls();
+    void setParameter (const juce::String&, float plainValue);
+    [[nodiscard]] juce::Rectangle<float> analyzerBounds() const;
+    [[nodiscard]] float frequencyToX (float frequency) const;
+    [[nodiscard]] float xToFrequency (float x) const;
+    [[nodiscard]] int crossoverAt (juce::Point<float>, bool badgeOnly) const;
+    [[nodiscard]] int bandAt (float x) const;
+    void showBandCountMenu();
+    void showSlopeMenu (int crossover);
+
+    DefaultDistortionAudioProcessor& processor;
+    juce::dsp::FFT fft { fftOrder };
+    juce::dsp::WindowingFunction<float> window {
+        fftSize, juce::dsp::WindowingFunction<float>::hann, true
+    };
+    std::array<float, fftSize> inputHistory {};
+    std::array<float, fftSize> outputHistory {};
+    std::array<float, fftSize * 2> inputFft {};
+    std::array<float, fftSize * 2> outputFft {};
+    std::array<float, fftSize / 2> inputSpectrum {};
+    std::array<float, fftSize / 2> outputSpectrum {};
+    std::array<float, 4096> incomingInput {};
+    std::array<float, 4096> incomingOutput {};
+    int historyPosition = 0;
+    int hoveredCrossover = -1;
+    int draggedCrossover = -1;
+
+    juce::TextButton linkButton { "LINK" };
+    juce::TextButton bandCountButton { "2 BANDS" };
+    juce::TextButton phaseButton { "MIN PHASE" };
+    juce::TextButton soloButton { "SOLO" };
+    juce::TextButton bypassButton { "BYPASS" };
+    TrimSlider trimSlider;
+};
+
 class DefaultDistortionAudioProcessorEditor final
     : public juce::AudioProcessorEditor,
       private juce::Timer
@@ -176,6 +239,12 @@ private:
     void cycleAutoGain();
     void updateAutoGainButton (int mode);
     void updateCharacterControl (int mode);
+    void rebindContextualControls();
+    void beginBandGroupDrag (const juce::String& parameterSuffix,
+                             float displayedValue);
+    void updateBandGroupDrag (float displayedValue);
+    void endBandGroupDrag();
+    void updateMultibandVisibility (bool enabled, bool resizeEditor);
     void togglePalette();
 
     DefaultDistortionAudioProcessor& ownerProcessor;
@@ -186,6 +255,7 @@ private:
     TriangleButton previousModeButton { false };
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
+    juce::TextButton multibandButton { "MULTIBAND" };
     VerticalTextButton asymStereoButton;
     VerticalTextSlider secondarySlider {
         "SECONDARY", "S E C O N D A R Y", 0.0
@@ -200,6 +270,7 @@ private:
     ParameterControl output { "OUTPUT" };
     ParameterControl quality { "OVERSAMPLING" };
     ResponseDisplay responseDisplay;
+    MultibandPanel multibandPanel;
 
     std::unique_ptr<SliderAttachment> driveAttachment;
     std::unique_ptr<SliderAttachment> secondaryAttachment;
@@ -213,10 +284,21 @@ private:
     std::unique_ptr<juce::ParameterAttachment> modeAttachment;
     std::unique_ptr<juce::ParameterAttachment> autoGainAttachment;
     std::unique_ptr<juce::ParameterAttachment> characterAttachment;
+    std::unique_ptr<ButtonAttachment> multibandAttachment;
 
     int displayedMode = -1;
     int displayedAutoGainMode = -1;
     bool updatingCharacter = false;
+    int boundBand = -2;
+    struct BandGroupDrag
+    {
+        bool active = false;
+        float displayedStart = 0.0f;
+        std::array<float, MultibandParameters::maximumBands> bandStarts {};
+        std::array<juce::RangedAudioParameter*,
+                   MultibandParameters::maximumBands> parameters {};
+    } bandGroupDrag;
+    bool multibandVisible = false;
     juce::Random brandRandom;
     double nextBrandGlitchTimeMs = 0.0;
 
