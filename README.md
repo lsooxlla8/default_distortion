@@ -16,7 +16,9 @@ settings, per-band Solo/Bypass/Trim, and a simultaneous input/output RTA.
 In linked mode every band uses the main saturation controls. Unlinking copies
 the current controls into all bands; selecting a band in the RTA then exposes
 its own Mode, Drive, Character, Secondary, Asymmetry, Tone, Stages, and Mix.
-Linking again copies the selected band to all bands.
+Shift-dragging any of those controls offsets the same control in every band by
+the same amount while preserving their differences. Linking again copies the
+selected band to all bands.
 
 Regular Auto Gain uses the existing compensation independently in every band.
 Smart Auto Gain instead measures the complete summed multiband result before

@@ -404,6 +404,13 @@ void DefaultDistortionAudioProcessor::prepareToPlay (double newSampleRate,
     analyzerInputBuffer.setSize (
         juce::jmax (1, getTotalNumOutputChannels()),
         juce::jmax (1, samplesPerBlock), false, false, true);
+    const auto maximumAnalyzerLatency = juce::jmax (
+        engine.getLatencySamples(), multibandEngine.getLatencySamples (true));
+    analyzerInputDelayBuffer.setSize (
+        juce::jmax (1, getTotalNumOutputChannels()),
+        maximumAnalyzerLatency + juce::jmax (1, samplesPerBlock) + 1,
+        false, true, true);
+    analyzerInputDelayPosition = 0;
     // Prime deterministic compensation on the host setup thread. Subsequent
     // edits use the pre-generated table directly in the audio callback; no
     // programme measurement or background recalibration is involved.
@@ -420,6 +427,8 @@ void DefaultDistortionAudioProcessor::releaseResources()
 {
     engine.reset();
     multibandEngine.reset();
+    analyzerInputDelayBuffer.clear();
+    analyzerInputDelayPosition = 0;
 }
 
 bool DefaultDistortionAudioProcessor::isBusesLayoutSupported (
@@ -472,7 +481,10 @@ void DefaultDistortionAudioProcessor::processBlock (
     }
     outputPeak.store (calculatePeak (buffer), std::memory_order_relaxed);
     if (shouldAnalyze)
+    {
+        delayAnalyzerInput (analyzerInputBuffer, requiredLatency);
         pushAnalyzerSamples (analyzerInputBuffer, buffer);
+    }
 }
 
 Parameters DefaultDistortionAudioProcessor::getCurrentParameters() const noexcept
@@ -717,6 +729,36 @@ void DefaultDistortionAudioProcessor::pushAnalyzerSamples (
             analyzerInput[static_cast<size_t> (destination)] = inputMono;
             analyzerOutput[static_cast<size_t> (destination)] = outputMono;
         }
+}
+
+void DefaultDistortionAudioProcessor::delayAnalyzerInput (
+    juce::AudioBuffer<float>& input,
+    int latencySamples) noexcept
+{
+    const auto capacity = analyzerInputDelayBuffer.getNumSamples();
+    const auto channels = juce::jmin (
+        input.getNumChannels(), analyzerInputDelayBuffer.getNumChannels());
+    if (capacity <= 0 || channels <= 0)
+        return;
+
+    const auto delay = juce::jlimit (0, capacity - 1, latencySamples);
+    for (int sample = 0; sample < input.getNumSamples(); ++sample)
+    {
+        auto readPosition = analyzerInputDelayPosition - delay;
+        if (readPosition < 0)
+            readPosition += capacity;
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const auto current = input.getSample (channel, sample);
+            const auto delayed = delay == 0
+                ? current
+                : analyzerInputDelayBuffer.getSample (channel, readPosition);
+            analyzerInputDelayBuffer.setSample (
+                channel, analyzerInputDelayPosition, current);
+            input.setSample (channel, sample, delayed);
+        }
+        analyzerInputDelayPosition = (analyzerInputDelayPosition + 1) % capacity;
+    }
 }
 
 int DefaultDistortionAudioProcessor::pullAnalyzerSamples (

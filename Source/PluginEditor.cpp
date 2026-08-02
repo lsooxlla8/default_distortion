@@ -1464,18 +1464,47 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     {
         if (characterAttachment != nullptr)
             characterAttachment->beginGesture();
+        beginBandGroupDrag (
+            "Character",
+            static_cast<float> (character.slider.getValue() / 100.0));
     };
     character.slider.onValueChange = [this]
     {
         if (! updatingCharacter && characterAttachment != nullptr)
             characterAttachment->setValueAsPartOfGesture (
                 static_cast<float> (character.slider.getValue() / 100.0));
+        if (! updatingCharacter)
+            updateBandGroupDrag (
+                static_cast<float> (character.slider.getValue() / 100.0));
     };
     character.slider.onDragEnd = [this]
     {
         if (characterAttachment != nullptr)
             characterAttachment->endGesture();
+        endBandGroupDrag();
     };
+    const auto installGroupDrag = [this] (
+        juce::Slider& slider, juce::String suffix)
+    {
+        slider.onDragStart = [this, &slider, suffix]
+        {
+            beginBandGroupDrag (suffix, static_cast<float> (slider.getValue()));
+        };
+        slider.onValueChange = [this, &slider]
+        {
+            updateBandGroupDrag (static_cast<float> (slider.getValue()));
+        };
+        slider.onDragEnd = [this]
+        {
+            endBandGroupDrag();
+        };
+    };
+    installGroupDrag (drive.slider, "Drive");
+    installGroupDrag (secondarySlider, "Secondary");
+    installGroupDrag (asym.slider, "Asym");
+    installGroupDrag (tone.slider, "Tone");
+    installGroupDrag (stages.slider, "Stages");
+    installGroupDrag (mix.slider, "Mix");
     rebindContextualControls();
     timerCallback();
     startTimerHz (12);
@@ -1579,6 +1608,68 @@ void DefaultDistortionAudioProcessorEditor::rebindContextualControls()
             });
         characterAttachment->sendInitialUpdate();
     }
+}
+
+void DefaultDistortionAudioProcessorEditor::beginBandGroupDrag (
+    const juce::String& parameterSuffix,
+    float displayedValue)
+{
+    endBandGroupDrag();
+    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
+    if (! multiband.enabled
+        || multiband.linked
+        || boundBand < 0
+        || ! juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown())
+        return;
+
+    bandGroupDrag.displayedStart = displayedValue;
+    bandGroupDrag.active = true;
+    for (int band = 0; band < MultibandParameters::maximumBands; ++band)
+    {
+        auto* parameter = ownerProcessor.parameters.getParameter (
+            ParamIDs::band (band, parameterSuffix.toRawUTF8()));
+        if (parameter == nullptr)
+        {
+            endBandGroupDrag();
+            return;
+        }
+        bandGroupDrag.parameters[static_cast<size_t> (band)] = parameter;
+        bandGroupDrag.bandStarts[static_cast<size_t> (band)] =
+            parameter->convertFrom0to1 (parameter->getValue());
+        if (band != boundBand)
+            parameter->beginChangeGesture();
+    }
+}
+
+void DefaultDistortionAudioProcessorEditor::updateBandGroupDrag (
+    float displayedValue)
+{
+    if (! bandGroupDrag.active)
+        return;
+    const auto delta = displayedValue - bandGroupDrag.displayedStart;
+    for (int band = 0; band < MultibandParameters::maximumBands; ++band)
+    {
+        if (band == boundBand)
+            continue;
+        auto* parameter = bandGroupDrag.parameters[static_cast<size_t> (band)];
+        if (parameter == nullptr)
+            continue;
+        const auto plainValue = parameter->getNormalisableRange().snapToLegalValue (
+            bandGroupDrag.bandStarts[static_cast<size_t> (band)] + delta);
+        parameter->setValueNotifyingHost (
+            parameter->convertTo0to1 (plainValue));
+    }
+}
+
+void DefaultDistortionAudioProcessorEditor::endBandGroupDrag()
+{
+    if (bandGroupDrag.active)
+        for (int band = 0; band < MultibandParameters::maximumBands; ++band)
+            if (band != boundBand)
+                if (auto* parameter = bandGroupDrag.parameters[
+                        static_cast<size_t> (band)])
+                    parameter->endChangeGesture();
+    bandGroupDrag = {};
 }
 
 void DefaultDistortionAudioProcessorEditor::updateMultibandVisibility (

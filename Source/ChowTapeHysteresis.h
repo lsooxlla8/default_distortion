@@ -22,16 +22,14 @@
 
 namespace dd::chowtape
 {
+inline constexpr double alpha = 1.6e-3;
+
 struct State
 {
     double previousMagnetisation = 0.0;
     double previousField = 0.0;
     double previousFieldDerivative = 0.0;
 };
-
-namespace detail
-{
-constexpr double alpha = 1.6e-3;
 
 struct Model
 {
@@ -79,6 +77,8 @@ inline Model makeModel (double drive, double width) noexcept
     return model;
 }
 
+namespace detail
+{
 struct Evaluation
 {
     double derivative = 0.0;
@@ -163,10 +163,9 @@ inline Evaluation evaluate (double magnetisation,
 } // namespace detail
 
 inline float processSample (float input,
-                            float drive,
-                            float width,
                             double sampleRate,
-                            State& state) noexcept
+                            State& state,
+                            const Model& model) noexcept
 {
     const auto rate = std::max (1.0, sampleRate);
     const auto period = 1.0 / rate;
@@ -175,8 +174,6 @@ inline float processSample (float input,
     const auto fieldDerivative =
         (1.75 / period) * (field - state.previousField)
         - 0.75 * state.previousFieldDerivative;
-    const auto model = detail::makeModel (drive, width);
-
     const auto previousEvaluation = detail::evaluate (
         state.previousMagnetisation,
         state.previousField,
@@ -216,5 +213,15 @@ inline float processSample (float input,
     state.previousMagnetisation = magnetisation;
     state.previousField = field;
     return static_cast<float> (magnetisation);
+}
+
+inline float processSample (float input,
+                            float drive,
+                            float width,
+                            double sampleRate,
+                            State& state) noexcept
+{
+    return processSample (
+        input, sampleRate, state, makeModel (drive, width));
 }
 } // namespace dd::chowtape

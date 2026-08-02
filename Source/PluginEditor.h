@@ -175,7 +175,7 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
 
 private:
-    static constexpr int fftOrder = 11;
+    static constexpr int fftOrder = 12;
     static constexpr int fftSize = 1 << fftOrder;
     void timerCallback() override;
     void updateSpectrum();
@@ -240,6 +240,10 @@ private:
     void updateAutoGainButton (int mode);
     void updateCharacterControl (int mode);
     void rebindContextualControls();
+    void beginBandGroupDrag (const juce::String& parameterSuffix,
+                             float displayedValue);
+    void updateBandGroupDrag (float displayedValue);
+    void endBandGroupDrag();
     void updateMultibandVisibility (bool enabled, bool resizeEditor);
     void togglePalette();
 
@@ -286,6 +290,14 @@ private:
     int displayedAutoGainMode = -1;
     bool updatingCharacter = false;
     int boundBand = -2;
+    struct BandGroupDrag
+    {
+        bool active = false;
+        float displayedStart = 0.0f;
+        std::array<float, MultibandParameters::maximumBands> bandStarts {};
+        std::array<juce::RangedAudioParameter*,
+                   MultibandParameters::maximumBands> parameters {};
+    } bandGroupDrag;
     bool multibandVisible = false;
     juce::Random brandRandom;
     double nextBrandGlitchTimeMs = 0.0;

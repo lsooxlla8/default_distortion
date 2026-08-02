@@ -1670,6 +1670,7 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
         case Mode::tapeHysteresis:
             p[0] = juce::jlimit (0.0f, 1.0f, 0.08f + 0.92f * drive);
             p[1] = 0.38f * (2.0f * context.secondaryParameter - 1.0f);
+            context.tapeModel = chowtape::makeModel (p[0], c01);
             break;
 
         case Mode::transformerCore:
@@ -2111,10 +2112,9 @@ float DistortionEngine::processModeSample (float input,
         case Mode::tapeHysteresis:
             return chowtape::processSample (
                 x + p[1],
-                p[0],
-                c01,
                 processingSampleRate,
-                state.tape);
+                state.tape,
+                context.tapeModel);
 
         case Mode::transformerCore:
         {

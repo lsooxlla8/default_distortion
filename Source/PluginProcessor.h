@@ -95,9 +95,13 @@ private:
     std::array<float, analyzerCapacity> analyzerInput {};
     std::array<float, analyzerCapacity> analyzerOutput {};
     juce::AudioBuffer<float> analyzerInputBuffer;
+    juce::AudioBuffer<float> analyzerInputDelayBuffer;
+    int analyzerInputDelayPosition = 0;
 
     void pushAnalyzerSamples (const juce::AudioBuffer<float>& input,
                               const juce::AudioBuffer<float>& output) noexcept;
+    void delayAnalyzerInput (juce::AudioBuffer<float>& input,
+                             int latencySamples) noexcept;
     void copyMasterToAllBands (const Parameters& source);
     void copyBandToMasterAndAllBands (int sourceBand);
     void parameterChanged (const juce::String&, float) override;

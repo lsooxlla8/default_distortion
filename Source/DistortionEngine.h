@@ -182,6 +182,7 @@ private:
         float driveNormalised = 0.0f;
         double processingSampleRate = 44100.0;
         double hostSampleRate = 44100.0;
+        chowtape::Model tapeModel;
         std::array<float, 8> coefficients {};
         std::array<int, 2> integers {};
     };
