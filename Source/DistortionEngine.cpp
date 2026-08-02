@@ -766,6 +766,7 @@ void DistortionEngine::primeAutoGain (const Parameters& parameters)
         : 1.0f;
     autoGainLinear = deterministicGainLinear;
     lastGainSignature = signature;
+    lastGainLookupSignature = parameters.autoGainMode > 0 ? signature : 0;
     lastSmartGainSignature = hashSmartGainParameters (parameters);
     lastAutoGainMode = parameters.autoGainMode;
     resetSmartAutoGain();
@@ -800,6 +801,7 @@ void DistortionEngine::reset()
     autoGainLinear = 1.0f;
     deterministicGainLinear = 1.0f;
     lastGainSignature = 0;
+    lastGainLookupSignature = 0;
     lastSmartGainSignature = 0;
     resetSmartAutoGain();
     lastMode = -1;
@@ -1054,9 +1056,21 @@ void DistortionEngine::processInternal (
     smoothed.tone = smoothedTone;
     smoothed.mix = smoothedMix;
     smoothed.outputDb = smoothedOutputDb;
-    deterministicGainLinear = parameters.autoGainMode > 0
-        ? lookupDeterministicGain (smoothed, sampleRate)
-        : 1.0f;
+    if (parameters.autoGainMode > 0)
+    {
+        const auto lookupSignature = hashDeterministicGainParameters (smoothed);
+        if (lookupSignature != lastGainLookupSignature)
+        {
+            deterministicGainLinear = lookupDeterministicGain (
+                smoothed, sampleRate);
+            lastGainLookupSignature = lookupSignature;
+        }
+    }
+    else
+    {
+        deterministicGainLinear = 1.0f;
+        lastGainLookupSignature = 0;
+    }
 
     updateToneFilters (smoothed.tone);
     processTonePre (buffer);
@@ -1386,8 +1400,13 @@ float DistortionEngine::processCascadeSample (
         }
 
         const auto dry = value;
+        // Tape Drive belongs to the Jiles-Atherton model itself. Feeding the
+        // generic +36 dB stage gain into that model as well over-excites its
+        // state and makes the result strongly dependent on Oversampling.
         const auto shaped = processModeSample (
-            algorithmDrive
+            mode == Mode::tapeHysteresis
+                ? dry
+                : algorithmDrive
                 ? dry
                 : dry
                     * (mode == Mode::signSquare
@@ -1423,6 +1442,69 @@ void DistortionEngine::processNonlinearBlock (juce::dsp::AudioBlock<float> block
         / juce::jmax (1.0, processingSampleRate)));
     const auto dcMixCoefficient = smoothingCoefficient (
         processingSampleRate, 0.005);
+    const auto sameBits = [] (float first, float second) noexcept
+    {
+        return std::bit_cast<std::uint32_t> (first)
+            == std::bit_cast<std::uint32_t> (second);
+    };
+    const auto parametersStable =
+        sameBits (startParameters.driveDb, endParameters.driveDb)
+        && sameBits (startParameters.character, endParameters.character)
+        && sameBits (startParameters.secondary, endParameters.secondary)
+        && sameBits (startParameters.asymmetry, endParameters.asymmetry);
+    if (parametersStable)
+    {
+        const auto driveDb = endParameters.driveDb;
+        const auto character = endParameters.character;
+        const auto secondary = secondaryParameterForMode (
+            mode, endParameters);
+        const auto stageGain = juce::Decibels::decibelsToGain (driveDb);
+        const auto stageDepth = driveDepth (driveDb);
+        for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
+        {
+            auto* data = block.getChannelPointer (channel);
+            const auto channelAsymmetry =
+                endParameters.asymmetryStereo && channel == 1
+                    ? -endParameters.asymmetry
+                    : endParameters.asymmetry;
+            const auto modeContext = makeModeContext (
+                mode,
+                character,
+                secondary,
+                channelAsymmetry,
+                juce::jlimit (0.0f, 1.0f, driveDb / 36.0f),
+                processingSampleRate,
+                hostSampleRate);
+            const auto dcMix = dcBlockingAmount (
+                mode, character, channelAsymmetry, secondary);
+            for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+            {
+                const auto value = processCascadeSample (
+                    data[sample],
+                    modeContext,
+                    stageGain,
+                    stageDepth,
+                    stages,
+                    stageStates[channel]);
+                const auto previousInput = dcPreviousInput[channel];
+                const auto previousOutput = dcPreviousOutput[channel];
+                const auto filtered =
+                    value - previousInput + dcCoefficient * previousOutput;
+                dcPreviousInput[channel] = value;
+                dcPreviousOutput[channel] = filtered;
+                dcMixState[channel] = dcMix
+                    + dcMixCoefficient * (dcMixState[channel] - dcMix);
+                const auto dcBlocked = lerp (
+                    value, filtered, dcMixState[channel]);
+                const auto safeOutput = mode == Mode::schmittHysteresis
+                    ? juce::jlimit (-0.98f, 0.98f, dcBlocked)
+                    : dcBlocked;
+                data[sample] = std::isfinite (safeOutput) ? safeOutput : 0.0f;
+            }
+        }
+        return;
+    }
+
     for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
     {
         auto* data = block.getChannelPointer (channel);
@@ -1671,6 +1753,9 @@ DistortionEngine::ModeContext DistortionEngine::makeModeContext (
             p[0] = juce::jlimit (0.0f, 1.0f, 0.08f + 0.92f * drive);
             p[1] = 0.38f * (2.0f * context.secondaryParameter - 1.0f);
             context.tapeModel = chowtape::makeModel (p[0], c01);
+            context.tapeIntegration =
+                chowtape::detail::makeIntegrationCoefficients (
+                    processingSampleRate);
             break;
 
         case Mode::transformerCore:
@@ -2112,9 +2197,9 @@ float DistortionEngine::processModeSample (float input,
         case Mode::tapeHysteresis:
             return chowtape::processSample (
                 x + p[1],
-                processingSampleRate,
                 state.tape,
-                context.tapeModel);
+                context.tapeModel,
+                context.tapeIntegration);
 
         case Mode::transformerCore:
         {
@@ -2827,7 +2912,8 @@ float DistortionEngine::calculateReferenceAutoGain (
     }
 
     const auto longMemoryCalibration =
-        mode == Mode::downsample
+        mode == Mode::tapeHysteresis
+        || mode == Mode::downsample
         || mode == Mode::slewLimiter
         || mode == Mode::schmittHysteresis
         || mode == Mode::phaseDistortion

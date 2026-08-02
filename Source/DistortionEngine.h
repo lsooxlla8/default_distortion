@@ -183,6 +183,7 @@ private:
         double processingSampleRate = 44100.0;
         double hostSampleRate = 44100.0;
         chowtape::Model tapeModel;
+        chowtape::detail::IntegrationCoefficients tapeIntegration;
         std::array<float, 8> coefficients {};
         std::array<int, 2> integers {};
     };
@@ -378,6 +379,7 @@ private:
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };
     std::uint64_t lastGainSignature = 0;
+    std::uint64_t lastGainLookupSignature = 0;
     std::uint64_t lastSmartGainSignature = 0;
     float lastToneCoefficientAmount = std::numeric_limits<float>::quiet_NaN();
     bool toneFiltersBypassed = true;

@@ -4,6 +4,7 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -1520,6 +1521,74 @@ void testDigitalClockIgnoresOversampling (TestContext& context)
     context.expect (
         maximumDifference < 1.0e-7f,
         "Downsample clock changes when Oversampling is enabled");
+}
+
+double measureTapeRmsAtQuality (int quality, TestContext& context)
+{
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, blockSize, 1);
+
+    dd::Parameters parameters;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::tapeHysteresis);
+    parameters.driveDb = 36.0f;
+    parameters.character = 0.5f;
+    parameters.secondary = 0.5f;
+    parameters.asymmetry = 0.0f;
+    parameters.stages = 1;
+    parameters.mix = 1.0f;
+    parameters.outputDb = 0.01f;
+    parameters.quality = quality;
+    parameters.autoGainMode = 0;
+
+    juce::AudioBuffer<float> buffer (1, blockSize);
+    double phase = 0.0;
+    double energy = 0.0;
+    int measuredSamples = 0;
+    constexpr int warmupBlocks = 48;
+    constexpr int measurementBlocks = 32;
+    for (int block = 0; block < warmupBlocks + measurementBlocks; ++block)
+    {
+        for (int sample = 0; sample < blockSize; ++sample)
+        {
+            buffer.setSample (
+                0,
+                sample,
+                0.35f * static_cast<float> (std::sin (phase)));
+            phase += juce::MathConstants<double>::twoPi
+                * 997.0 / sampleRate;
+        }
+        engine.process (buffer, parameters);
+        if (block >= warmupBlocks)
+            for (int sample = 0; sample < blockSize; ++sample)
+            {
+                const auto value = buffer.getSample (0, sample);
+                context.expect (
+                    std::isfinite (value),
+                    "Tape produced a non-finite sample at quality "
+                        + juce::String (quality));
+                energy += static_cast<double> (value) * value;
+                ++measuredSamples;
+            }
+    }
+    return std::sqrt (energy / juce::jmax (1, measuredSamples));
+}
+
+void testTapeOversamplingConsistency (TestContext& context)
+{
+    std::array<double, 4> rms {};
+    for (int quality = 0; quality < static_cast<int> (rms.size()); ++quality)
+        rms[static_cast<size_t> (quality)] =
+            measureTapeRmsAtQuality (quality, context);
+
+    const auto [minimum, maximum] = std::minmax_element (
+        rms.begin(), rms.end());
+    const auto spreadDb = 20.0 * std::log10 (
+        *maximum / juce::jmax (1.0e-12, *minimum));
+    context.expect (
+        std::isfinite (spreadDb) && spreadDb <= 1.0,
+        "Tape level changes too much across Oversampling settings ("
+            + juce::String (spreadDb, 2) + " dB)");
 }
 
 double measureAliasComponent (int oversampling)
@@ -3102,6 +3171,7 @@ int main (int argc, char** argv)
     testEveryModeAtMaximum (context);
     testDriveStartsContinuously (context);
     testDigitalClockIgnoresOversampling (context);
+    testTapeOversamplingConsistency (context);
     testOversamplingReducesAliasing (context);
     testSmartAutoGainFreezes (context);
     testStereoAsymmetryUsesOppositePolarities (context);

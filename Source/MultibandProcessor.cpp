@@ -36,10 +36,9 @@ struct TptStage
     std::array<float, maximumChannels> s1 {};
     std::array<float, maximumChannels> s2 {};
 
-    void setCutoff (float frequency, double sampleRate) noexcept
+    void setG (float newG) noexcept
     {
-        g = std::tan (juce::MathConstants<float>::pi
-                      * frequency / static_cast<float> (sampleRate));
+        g = newG;
         if (kind == Kind::onePole)
             h = g / (1.0f + g);
         else
@@ -130,10 +129,10 @@ struct TptPath
         reset();
     }
 
-    void setCutoff (float frequency, double sampleRate) noexcept
+    void setG (float g) noexcept
     {
         for (int stage = 0; stage < stageCount; ++stage)
-            stages[static_cast<size_t> (stage)].setCutoff (frequency, sampleRate);
+            stages[static_cast<size_t> (stage)].setG (g);
     }
 
     float process (float input, int channel) noexcept
@@ -169,16 +168,25 @@ struct SplitFilter
     void configure (int newSlopeIndex, float newCutoff)
     {
         newSlopeIndex = juce::jlimit (0, 4, newSlopeIndex);
+        const auto boundedCutoff = juce::jlimit (
+            minimumFrequency, maximumFrequency (sampleRate), newCutoff);
+        const auto slopeChanged = newSlopeIndex != slopeIndex;
         if (newSlopeIndex != slopeIndex)
         {
             slopeIndex = newSlopeIndex;
             low.configure (slopeIndex, false);
             high.configure (slopeIndex, true);
         }
-        cutoff = juce::jlimit (
-            minimumFrequency, maximumFrequency (sampleRate), newCutoff);
-        low.setCutoff (cutoff, sampleRate);
-        high.setCutoff (cutoff, sampleRate);
+        if (! slopeChanged
+            && std::bit_cast<std::uint32_t> (boundedCutoff)
+                == std::bit_cast<std::uint32_t> (cutoff))
+            return;
+        cutoff = boundedCutoff;
+        const auto g = std::tan (
+            juce::MathConstants<float>::pi
+            * cutoff / static_cast<float> (sampleRate));
+        low.setG (g);
+        high.setG (g);
     }
 
     void processSample (float input,
@@ -253,8 +261,8 @@ struct MinimumPhaseBank
 
         const auto channels = input.getNumChannels();
         const auto samples = input.getNumSamples();
-        for (auto& band : bands)
-            band.clear();
+        for (int band = 0; band < bandCount; ++band)
+            bands[static_cast<size_t> (band)].clear();
 
         for (int channel = 0; channel < channels; ++channel)
             for (int sample = 0; sample < samples; ++sample)
@@ -357,8 +365,8 @@ struct MinimumPhaseRouter
                 frequencies,
                 slopes);
 
-        for (auto& band : result)
-            band.clear();
+        for (int band = 0; band < bandCount; ++band)
+            result[static_cast<size_t> (band)].clear();
         const auto samples = input.getNumSamples();
         for (int channel = 0; channel < input.getNumChannels(); ++channel)
             for (int sample = 0; sample < samples; ++sample)
@@ -382,13 +390,15 @@ struct MinimumPhaseRouter
                     oldWeight /= normalise;
                     newWeight /= normalise;
                 }
-                for (int band = 0; band < maximumBands; ++band)
+                for (int band = 0; band < bandCount; ++band)
                 {
-                    auto value = oldWeight
-                        * outputs[static_cast<size_t> (activeBank)]
-                              [static_cast<size_t> (band)]
-                            .getSample (channel, sample);
-                    if (transitionBank >= 0)
+                    auto value = band < currentBandCount
+                        ? oldWeight
+                            * outputs[static_cast<size_t> (activeBank)]
+                                  [static_cast<size_t> (band)]
+                                .getSample (channel, sample)
+                        : 0.0f;
+                    if (transitionBank >= 0 && band < bandCount)
                         value += newWeight
                             * outputs[static_cast<size_t> (transitionBank)]
                                   [static_cast<size_t> (band)]
@@ -466,6 +476,7 @@ struct LinearPhaseBank : private juce::Thread
     int warmupSamplesRemaining = 0;
     int crossfadeSamplesRemaining = 0;
     int crossfadeLength = 960;
+    int processedEdgeCount = 0;
 
     static juce::AudioBuffer<float> makeImpulse (double sampleRate,
                                                   int length,
@@ -563,6 +574,7 @@ struct LinearPhaseBank : private juce::Thread
         warmingConvolutionBank = -1;
         warmupSamplesRemaining = 0;
         crossfadeSamplesRemaining = 0;
+        processedEdgeCount = 0;
         crossfadeLength = juce::jmax (
             1, juce::roundToInt (sampleRate * 0.02));
         startThread (juce::Thread::Priority::low);
@@ -581,6 +593,7 @@ struct LinearPhaseBank : private juce::Thread
         warmingConvolutionBank = -1;
         warmupSamplesRemaining = 0;
         crossfadeSamplesRemaining = 0;
+        processedEdgeCount = 0;
     }
 
     float delaySample (float input, int channel) noexcept
@@ -694,9 +707,16 @@ struct LinearPhaseBank : private juce::Thread
         applyPendingKernels();
         const auto samples = input.getNumSamples();
         const auto activeChannels = input.getNumChannels();
+        bandCount = juce::jlimit (2, maximumBands, bandCount);
+        const auto activeEdges = bandCount - 1;
+        if (activeEdges > processedEdgeCount)
+            for (auto& bank : convolvers)
+                for (int edge = processedEdgeCount; edge < activeEdges; ++edge)
+                    bank[static_cast<size_t> (edge)]->reset();
+        processedEdgeCount = activeEdges;
         const auto processBank = [&] (int bank)
         {
-            for (int edge = 0; edge < maximumCrossovers; ++edge)
+            for (int edge = 0; edge < activeEdges; ++edge)
             {
                 auto& output = cumulative[static_cast<size_t> (bank)]
                     [static_cast<size_t> (edge)];
@@ -713,9 +733,8 @@ struct LinearPhaseBank : private juce::Thread
         if (warmingConvolutionBank >= 0)
             processBank (warmingConvolutionBank);
 
-        for (auto& band : bands)
-            band.clear();
-        bandCount = juce::jlimit (2, maximumBands, bandCount);
+        for (int band = 0; band < bandCount; ++band)
+            bands[static_cast<size_t> (band)].clear();
         const auto crossfading = crossfadeSamplesRemaining > 0
             && warmingConvolutionBank >= 0;
         const auto crossfadeStart = crossfadeSamplesRemaining;
@@ -1057,8 +1076,9 @@ struct MultibandProcessor::Impl
         const auto activeChannels = buffer.getNumChannels();
         dryReference.setSize (activeChannels, samples, false, false, true);
         dryReference.makeCopyOf (buffer, true);
-        for (auto& band : bands)
-            band.setSize (activeChannels, samples, false, false, true);
+        for (int band = 0; band < activeBands; ++band)
+            bands[static_cast<size_t> (band)].setSize (
+                activeChannels, samples, false, false, true);
 
         if (multiband.phaseMode == 0)
             minimumBank.process (

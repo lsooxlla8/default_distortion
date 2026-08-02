@@ -39,6 +39,7 @@ struct Model
     double pinning = 0.47875;
     double irreversible = 1.0 - reversibility;
     double saturationOverScale = saturation / domainScale;
+    double inverseDomainScale = 1.0 / domainScale;
     double saturationOverScaleAlpha = alpha * saturationOverScale;
     double reversibleSlope = reversibility * saturationOverScale;
     double reversibleSlopeAlpha = alpha * reversibleSlope;
@@ -64,6 +65,7 @@ inline Model makeModel (double drive, double width) noexcept
     model.irreversible = 1.0 - model.reversibility;
     model.saturationOverScale =
         model.saturation / model.domainScale;
+    model.inverseDomainScale = 1.0 / model.domainScale;
     model.saturationOverScaleAlpha =
         alpha * model.saturationOverScale;
     model.reversibleSlope =
@@ -85,12 +87,26 @@ struct Evaluation
     double derivativeByMagnetisation = 0.0;
 };
 
+struct IntegrationCoefficients
+{
+    double fieldDerivativeScale = 1.75 * 44100.0;
+    double trapezoidScale = (1.0 / 44100.0) / 1.9;
+};
+
+inline IntegrationCoefficients makeIntegrationCoefficients (
+    double sampleRate) noexcept
+{
+    const auto rate = std::max (1.0, sampleRate);
+    return { 1.75 * rate, (1.0 / rate) / 1.9 };
+}
+
 inline int sign (double value) noexcept
 {
     return static_cast<int> (value > 0.0)
         - static_cast<int> (value < 0.0);
 }
 
+template <bool calculateJacobian>
 inline Evaluation evaluate (double magnetisation,
                             double field,
                             double fieldDerivative,
@@ -100,7 +116,7 @@ inline Evaluation evaluate (double magnetisation,
     constexpr double negativeTwoFifteenths = -2.0 / 15.0;
 
     const auto q = (field + magnetisation * alpha)
-        / model.domainScale;
+        * model.inverseDomainScale;
     const auto nearZero = std::abs (q) < 1.0e-3;
 
     double langevin = q * oneThird;
@@ -133,22 +149,27 @@ inline Evaluation evaluate (double magnetisation,
     if (std::abs (denominator) < 1.0e-12)
         denominator = std::copysign (1.0e-12, denominator);
 
-    const auto f1 = irreversibleSlope * difference / denominator;
+    const auto inverseDenominator = 1.0 / denominator;
+    const auto f1 = irreversibleSlope * difference * inverseDenominator;
     const auto f2 = langevinPrime * model.reversibleSlope;
     const auto f3 =
         1.0 - langevinPrime * model.reversibleSlopeAlpha;
     const auto safeF3 = std::abs (f3) < 1.0e-12
         ? std::copysign (1.0e-12, f3)
         : f3;
+    const auto inverseF3 = 1.0 / safeF3;
     const auto derivative =
-        fieldDerivative * (f1 + f2) / safeF3;
+        fieldDerivative * (f1 + f2) * inverseF3;
+
+    if constexpr (! calculateJacobian)
+        return { derivative, 0.0 };
 
     const auto differencePrime =
         langevinPrime * model.saturationOverScaleAlpha - 1.0;
     const auto f1Prime = irreversibleSlope
-        * (differencePrime / denominator
+        * (differencePrime * inverseDenominator
            + difference * alpha * differencePrime
-               / (denominator * denominator));
+               * inverseDenominator * inverseDenominator);
     const auto f2Prime =
         langevinSecond * model.reversibleCurvatureAlpha;
     const auto f3Prime =
@@ -156,25 +177,22 @@ inline Evaluation evaluate (double magnetisation,
 
     return {
         derivative,
-        fieldDerivative * (f1Prime + f2Prime) / safeF3
-            - derivative * f3Prime / safeF3
+        fieldDerivative * (f1Prime + f2Prime) * inverseF3
+            - derivative * f3Prime * inverseF3
     };
 }
 } // namespace detail
 
 inline float processSample (float input,
-                            double sampleRate,
                             State& state,
-                            const Model& model) noexcept
+                            const Model& model,
+                            const detail::IntegrationCoefficients& integration) noexcept
 {
-    const auto rate = std::max (1.0, sampleRate);
-    const auto period = 1.0 / rate;
-    const auto trapezoidScale = period / 1.9;
     const auto field = 2.0 * static_cast<double> (input);
     const auto fieldDerivative =
-        (1.75 / period) * (field - state.previousField)
+        integration.fieldDerivativeScale * (field - state.previousField)
         - 0.75 * state.previousFieldDerivative;
-    const auto previousEvaluation = detail::evaluate (
+    const auto previousEvaluation = detail::evaluate<false> (
         state.previousMagnetisation,
         state.previousField,
         state.previousFieldDerivative,
@@ -183,16 +201,16 @@ inline float processSample (float input,
     auto magnetisation = state.previousMagnetisation;
     for (int iteration = 0; iteration < 4; ++iteration)
     {
-        const auto evaluation = detail::evaluate (
+        const auto evaluation = detail::evaluate<true> (
             magnetisation, field, fieldDerivative, model);
         auto denominator =
-            1.0 - trapezoidScale
+            1.0 - integration.trapezoidScale
                 * evaluation.derivativeByMagnetisation;
         if (std::abs (denominator) < 1.0e-12)
             denominator = std::copysign (1.0e-12, denominator);
         const auto correction =
             (magnetisation - state.previousMagnetisation
-             - trapezoidScale
+             - integration.trapezoidScale
                  * (evaluation.derivative
                     + previousEvaluation.derivative))
             / denominator;
@@ -222,6 +240,9 @@ inline float processSample (float input,
                             State& state) noexcept
 {
     return processSample (
-        input, sampleRate, state, makeModel (drive, width));
+        input,
+        state,
+        makeModel (drive, width),
+        detail::makeIntegrationCoefficients (sampleRate));
 }
 } // namespace dd::chowtape
