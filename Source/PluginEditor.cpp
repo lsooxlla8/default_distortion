@@ -714,6 +714,52 @@ ResponseDisplay::~ResponseDisplay()
     stopTimer();
 }
 
+void TrimSlider::paint (juce::Graphics& graphics)
+{
+    const auto scale = scaleOf (*this);
+    auto track = getLocalBounds().toFloat();
+    track.removeFromRight (
+        static_cast<float> (getTextBoxWidth()) + 7.0f * scale);
+    track = track.reduced (7.0f * scale, 0.0f);
+
+    const auto toolbarColour = foregroundOf (*this);
+    const auto darkToolbar = toolbarColour.getPerceivedBrightness() < 0.5f;
+    const auto trackColour = darkToolbar
+        ? juce::Colour (0xffaaaaaa)
+        : juce::Colour (0xff777777);
+    const auto centreY = track.getCentreY();
+    graphics.setColour (trackColour);
+    graphics.fillRect (juce::Rectangle<float> {
+        track.getX(), centreY - 1.0f * scale,
+        track.getWidth(), 2.0f * scale });
+
+    const auto range = getMaximum() - getMinimum();
+    const auto amount = range > 0.0
+        ? static_cast<float> ((getValue() - getMinimum()) / range)
+        : 0.5f;
+    const auto markerSize = 9.0f * scale;
+    const auto markerX = track.getX()
+        + juce::jlimit (0.0f, 1.0f, amount) * track.getWidth();
+    graphics.setColour (trackColour.brighter (darkToolbar ? 0.08f : 0.0f));
+    graphics.fillRect (juce::Rectangle<float> {
+        markerX - 0.5f * markerSize,
+        centreY - 0.5f * markerSize,
+        markerSize,
+        markerSize });
+}
+
+void TrimSlider::lookAndFeelChanged()
+{
+    juce::Slider::lookAndFeelChanged();
+    setColour (juce::Slider::textBoxTextColourId, backgroundOf (*this));
+    setColour (
+        juce::Slider::textBoxBackgroundColourId,
+        juce::Colours::transparentBlack);
+    setColour (
+        juce::Slider::textBoxOutlineColourId,
+        juce::Colours::transparentBlack);
+}
+
 MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
     : processor (owner)
 {
@@ -742,10 +788,7 @@ MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
     };
     bandCountButton.onClick = [this]
     {
-        const auto count = processor.getCurrentMultibandParameters().bandCount;
-        setParameter (
-            ParamIDs::multibandBandCount,
-            static_cast<float> (count == 4 ? 0 : count - 1));
+        showBandCountMenu();
     };
     phaseButton.onClick = [this]
     {
@@ -849,6 +892,28 @@ int MultibandPanel::bandAt (float x) const
                 parameters.crossoverHz[static_cast<size_t> (crossover)]))
             return crossover;
     return parameters.bandCount - 1;
+}
+
+void MultibandPanel::showBandCountMenu()
+{
+    juce::PopupMenu menu;
+    const auto selected = processor.getCurrentMultibandParameters().bandCount;
+    for (int count = 2; count <= 4; ++count)
+        menu.addItem (
+            count,
+            juce::String (count) + " BANDS",
+            true,
+            count == selected);
+    const auto safeThis = juce::Component::SafePointer<MultibandPanel> (this);
+    menu.showMenuAsync (
+        juce::PopupMenu::Options {}.withTargetComponent (&bandCountButton),
+        [safeThis] (int result)
+        {
+            if (safeThis != nullptr && result >= 2 && result <= 4)
+                safeThis->setParameter (
+                    ParamIDs::multibandBandCount,
+                    static_cast<float> (result - 2));
+        });
 }
 
 void MultibandPanel::showSlopeMenu (int crossover)
@@ -983,9 +1048,12 @@ void MultibandPanel::paint (juce::Graphics& graphics)
             : bounds.getRight();
         if (band == selected)
         {
-            graphics.setColour (foreground.withAlpha (0.11f));
+            graphics.setColour (foreground.withAlpha (0.22f));
             graphics.fillRect (juce::Rectangle<float> {
                 left, bounds.getY(), right - left, bounds.getHeight() });
+            graphics.setColour (foreground.withAlpha (0.72f));
+            graphics.fillRect (juce::Rectangle<float> {
+                left, bounds.getY(), right - left, 3.0f * scaleOf (*this) });
         }
         graphics.setColour (foreground.withAlpha (0.55f));
         graphics.setFont (monoFont (11.0f * scaleOf (*this), true));
@@ -1057,17 +1125,28 @@ void MultibandPanel::paint (juce::Graphics& graphics)
         graphics.fillRect (x - 1.0f, bounds.getY(), 2.0f, bounds.getHeight());
         if (hoveredCrossover == crossover || draggedCrossover == crossover)
         {
-            const auto badge = juce::Rectangle<float> {
+            const auto frequencyBadge = juce::Rectangle<float> {
+                x - 38.0f, bounds.getY() + 9.0f, 76.0f, 23.0f };
+            const auto slopeBadge = juce::Rectangle<float> {
                 x - 38.0f, bounds.getBottom() - 32.0f, 76.0f, 23.0f };
             graphics.setColour (foreground);
-            graphics.fillRect (badge);
+            graphics.fillRect (frequencyBadge);
+            graphics.fillRect (slopeBadge);
             graphics.setColour (background);
             graphics.setFont (monoFont (10.0f * scaleOf (*this), true));
+            const auto frequency = parameters.crossoverHz[
+                static_cast<size_t> (crossover)];
+            graphics.drawText (
+                frequency >= 1000.0f
+                    ? juce::String (frequency / 1000.0f, 2) + " kHz"
+                    : juce::String (juce::roundToInt (frequency)) + " Hz",
+                frequencyBadge,
+                juce::Justification::centred);
             graphics.drawText (
                 juce::String (slopes[static_cast<size_t> (
                     parameters.crossoverSlope[static_cast<size_t> (crossover)])])
                     + " dB/oct",
-                badge,
+                slopeBadge,
                 juce::Justification::centred);
         }
     }
@@ -1511,15 +1590,21 @@ void DefaultDistortionAudioProcessorEditor::updateMultibandVisibility (
     multibandVisible = enabled;
     multibandPanel.setVisible (enabled);
     const auto targetHeight = enabled ? 620.0 : 354.0;
-    getConstrainer()->setFixedAspectRatio (860.0 / targetHeight);
+    if (resizeEditor)
+    {
+        const auto currentWidth = getWidth();
+        const auto scale = static_cast<double> (currentWidth) / 860.0;
+        setResizeLimits (1, 1, 10000, 10000);
+        getConstrainer()->setFixedAspectRatio (860.0 / targetHeight);
+        setSize (
+            currentWidth,
+            juce::roundToInt (targetHeight * scale));
+    }
+    else
+        getConstrainer()->setFixedAspectRatio (860.0 / targetHeight);
     setResizeLimits (
         720, enabled ? 519 : 296,
         1200, enabled ? 865 : 494);
-    if (resizeEditor)
-    {
-        const auto scale = static_cast<double> (getWidth()) / 860.0;
-        setSize (getWidth(), juce::roundToInt (targetHeight * scale));
-    }
     resized();
     repaint();
 }

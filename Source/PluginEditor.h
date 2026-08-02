@@ -152,6 +152,13 @@ private:
     bool visualizationValid = false;
 };
 
+class TrimSlider final : public juce::Slider
+{
+public:
+    void paint (juce::Graphics&) override;
+    void lookAndFeelChanged() override;
+};
+
 class MultibandPanel final : public juce::Component,
                              private juce::Timer
 {
@@ -179,6 +186,7 @@ private:
     [[nodiscard]] float xToFrequency (float x) const;
     [[nodiscard]] int crossoverAt (juce::Point<float>, bool badgeOnly) const;
     [[nodiscard]] int bandAt (float x) const;
+    void showBandCountMenu();
     void showSlopeMenu (int crossover);
 
     DefaultDistortionAudioProcessor& processor;
@@ -203,7 +211,7 @@ private:
     juce::TextButton phaseButton { "MIN PHASE" };
     juce::TextButton soloButton { "SOLO" };
     juce::TextButton bypassButton { "BYPASS" };
-    juce::Slider trimSlider;
+    TrimSlider trimSlider;
 };
 
 class DefaultDistortionAudioProcessorEditor final
