@@ -274,7 +274,8 @@ DefaultDistortionAudioProcessor::createLayout()
     layout.add (std::make_unique<Bool> (
         juce::ParameterID { ParamIDs::multibandLink, 1 },
         "Multiband Link",
-        true));
+        true,
+        juce::AudioParameterBoolAttributes {}.withMeta (true)));
     layout.add (std::make_unique<Choice> (
         juce::ParameterID { ParamIDs::multibandBandCount, 1 },
         "Multiband Band Count",
