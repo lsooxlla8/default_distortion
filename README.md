@@ -8,7 +8,19 @@ possible and did nothing myself. It contains a bunch of the most default
 saturation algorithms that have already appeared absolutely everywhere. We
 even stole some of the code from other developers.*
 
-Future plans: add a multiband mode.
+The optional multiband panel splits the signal into two, three, or four bands.
+Its draggable crossover lines support 6, 12, 24, 36, and 48 dB/oct slopes,
+Minimum Phase and Linear Phase operation, linked or independent saturation
+settings, per-band Solo/Bypass/Trim, and a simultaneous input/output RTA.
+
+In linked mode every band uses the main saturation controls. Unlinking copies
+the current controls into all bands; selecting a band in the RTA then exposes
+its own Mode, Drive, Character, Secondary, Asymmetry, Tone, Stages, and Mix.
+Linking again copies the selected band to all bands.
+
+Regular Auto Gain uses the existing compensation independently in every band.
+Smart Auto Gain instead measures the complete summed multiband result before
+the final Output control.
 
 \* In boring legal terms: copied or adapted code from open-source projects
 under their GPL-compatible licences.

@@ -962,6 +962,21 @@ double DistortionEngine::calculateGatedLoudnessEnergy (
 void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
                                 const Parameters& parameters)
 {
+    processInternal (buffer, parameters, true, true);
+}
+
+void DistortionEngine::processBand (juce::AudioBuffer<float>& buffer,
+                                    const Parameters& parameters)
+{
+    processInternal (buffer, parameters, false, false);
+}
+
+void DistortionEngine::processInternal (
+    juce::AudioBuffer<float>& buffer,
+    const Parameters& parameters,
+    bool allowSmartAutoGain,
+    bool clampFinalOutput)
+{
     const auto channels = juce::jmin (preparedChannels, buffer.getNumChannels());
     const auto samples = buffer.getNumSamples();
     if (channels <= 0 || samples <= 0)
@@ -1089,7 +1104,8 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
     double dryEnergy = 0.0;
     double wetEnergy = 0.0;
     double wetPeak = 0.0;
-    const auto smartMeasurementActive =
+    const auto smartMeasurementActive = allowSmartAutoGain
+        &&
         parameters.autoGainMode == 2
         && ! smartGainLocked;
 
@@ -1232,9 +1248,12 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    const auto targetAutoGain = parameters.autoGainMode <= 0
+    const auto effectiveAutoGainMode = allowSmartAutoGain
+        ? parameters.autoGainMode
+        : juce::jlimit (0, 1, parameters.autoGainMode);
+    const auto targetAutoGain = effectiveAutoGainMode <= 0
         ? 1.0f
-        : (parameters.autoGainMode == 1
+        : (effectiveAutoGainMode == 1
             ? deterministicGainLinear
             : (! smartGainLocked
                 ? deterministicGainLinear
@@ -1257,7 +1276,7 @@ void DistortionEngine::process (juce::AudioBuffer<float>& buffer,
             auto mixed = lerp (
                 dry[sample], wet[sample] * makeup, mix)
                 * outputGain;
-            if (smoothed.outputDb <= 0.001f)
+            if (clampFinalOutput && smoothed.outputDb <= 0.001f)
                 mixed = juce::jlimit (-1.0f, 1.0f, mixed);
             wet[sample] = std::isfinite (mixed) ? mixed : 0.0f;
         }

@@ -1,4 +1,5 @@
 #include "../Source/DistortionEngine.h"
+#include "../Source/MultibandProcessor.h"
 
 #include <juce_core/juce_core.h>
 
@@ -51,6 +52,215 @@ void fillSignal (juce::AudioBuffer<float>& buffer, double& phase)
                 static_cast<float> (value * (channel == 0 ? 1.0 : 0.87)));
         phase += 1.0;
     }
+}
+
+double measureMultibandReconstructionGain (double rate,
+                                           int bandCount,
+                                           int slopeIndex,
+                                           bool linearPhase,
+                                           double frequency,
+                                           TestContext& context)
+{
+    constexpr int testBlockSize = 256;
+    dd::MultibandProcessor processor;
+    processor.prepare (rate, testBlockSize, 2);
+    dd::Parameters master;
+    master.autoGainMode = 0;
+    master.outputDb = 0.01f;
+    dd::MultibandParameters multiband;
+    multiband.enabled = true;
+    multiband.linked = false;
+    multiband.bandCount = bandCount;
+    multiband.phaseMode = linearPhase ? 1 : 0;
+    multiband.crossoverHz = { 120.0f, 1000.0f, 5000.0f };
+    multiband.crossoverSlope.fill (slopeIndex);
+    for (auto& band : multiband.bands)
+        band.bypass = true;
+
+    juce::AudioBuffer<float> buffer (2, testBlockSize);
+    double phase = 0.0;
+    double inputEnergy = 0.0;
+    double outputEnergy = 0.0;
+    const auto warmupBlocks = linearPhase ? 96 : 32;
+    constexpr int measuredBlocks = 48;
+    for (int block = 0; block < warmupBlocks + measuredBlocks; ++block)
+    {
+        for (int sample = 0; sample < testBlockSize; ++sample)
+        {
+            const auto value = 0.12f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * frequency / rate;
+            for (int channel = 0; channel < 2; ++channel)
+                buffer.setSample (channel, sample, value);
+            if (block >= warmupBlocks)
+                inputEnergy += static_cast<double> (value) * value * 2.0;
+        }
+        processor.process (buffer, master, multiband, -1);
+        if (block >= warmupBlocks)
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < testBlockSize; ++sample)
+                {
+                    const auto value = buffer.getSample (channel, sample);
+                    context.expect (
+                        std::isfinite (value),
+                        "Multiband reconstruction produced a non-finite sample");
+                    outputEnergy += static_cast<double> (value) * value;
+                }
+    }
+    return std::sqrt (outputEnergy / juce::jmax (1.0e-20, inputEnergy));
+}
+
+void testMultibandCrossoversAndSmartGain (TestContext& context)
+{
+    constexpr std::array<double, 3> rates { 44100.0, 48000.0, 96000.0 };
+    constexpr std::array<double, 5> frequencies {
+        55.0, 240.0, 1500.0, 6500.0, 14000.0
+    };
+    for (const auto rate : rates)
+        for (int bands = 2; bands <= 4; ++bands)
+            for (int slope = 0; slope < 5; ++slope)
+                for (const auto frequency : frequencies)
+                {
+                    if (frequency >= 0.4 * rate)
+                        continue;
+                    const auto gain = measureMultibandReconstructionGain (
+                        rate, bands, slope, false, frequency, context);
+                    context.expect (
+                        gain > 0.975 && gain < 1.025,
+                        "Minimum-phase reconstruction gain is not flat at "
+                            + juce::String (frequency)
+                            + " Hz, " + juce::String (bands)
+                            + " bands, "
+                            + juce::String (
+                                dd::MultibandProcessor::slopeDecibelsPerOctave (
+                                    slope))
+                            + " dB/oct: " + juce::String (gain));
+                }
+
+    for (const auto bands : { 2, 4 })
+        for (const auto frequency : { 55.0, 1500.0, 10000.0 })
+        {
+            const auto gain = measureMultibandReconstructionGain (
+                48000.0, bands, 2, true, frequency, context);
+            context.expect (
+                gain > 0.97 && gain < 1.03,
+                "Linear-phase complementary reconstruction is not unity at "
+                    + juce::String (frequency) + " Hz, "
+                    + juce::String (bands) + " bands: "
+                    + juce::String (gain));
+        }
+
+    dd::MultibandProcessor processor;
+    processor.prepare (sampleRate, 256, 2);
+    context.expect (
+        processor.getLatencySamples (true)
+            > processor.getLatencySamples (false),
+        "Linear phase does not report additional latency");
+    dd::Parameters master;
+    master.autoGainMode = 2;
+    master.outputDb = 0.01f;
+    dd::MultibandParameters multiband;
+    multiband.enabled = true;
+    multiband.linked = false;
+    multiband.bandCount = 4;
+    for (auto& band : multiband.bands)
+        band.bypass = true;
+    juce::AudioBuffer<float> buffer (2, 256);
+    double phase = 0.0;
+    for (int block = 0; block < 220; ++block)
+    {
+        fillSignal (buffer, phase);
+        processor.process (buffer, master, multiband, -1);
+    }
+    context.expect (
+        processor.isSmartAutoGainLocked()
+            && processor.getSmartAutoGainProgress() >= 0.999f,
+        "Multiband Smart Auto Gain did not lock on the summed signal");
+
+    dd::MultibandProcessor linear;
+    linear.prepare (sampleRate, 256, 2);
+    master.autoGainMode = 0;
+    master.outputDb = 0.0f;
+    multiband.phaseMode = 1;
+    const auto latency = linear.getLatencySamples (true);
+    std::vector<float> inputHistory;
+    std::vector<float> outputHistory;
+    inputHistory.reserve (256 * 160);
+    outputHistory.reserve (256 * 160);
+    std::uint32_t noise = UINT32_C (0x13579bdf);
+    for (int block = 0; block < 160; ++block)
+    {
+        for (int sample = 0; sample < 256; ++sample)
+        {
+            noise = noise * UINT32_C (1664525) + UINT32_C (1013904223);
+            const auto value = 0.05f
+                * (2.0f * static_cast<float> (noise & UINT32_C (0x00ffffff))
+                    / static_cast<float> (UINT32_C (0x00ffffff)) - 1.0f);
+            inputHistory.push_back (value);
+            buffer.setSample (0, sample, value);
+            buffer.setSample (1, sample, value);
+        }
+        linear.process (buffer, master, multiband, -1);
+        for (int sample = 0; sample < 256; ++sample)
+            outputHistory.push_back (buffer.getSample (0, sample));
+    }
+    double referenceEnergy = 0.0;
+    double errorEnergy = 0.0;
+    const auto start = juce::jmax (latency + 4096, 12000);
+    for (int sample = start;
+         sample < static_cast<int> (outputHistory.size());
+         ++sample)
+    {
+        const auto reference = inputHistory[static_cast<size_t> (sample - latency)];
+        const auto error = outputHistory[static_cast<size_t> (sample)] - reference;
+        referenceEnergy += static_cast<double> (reference) * reference;
+        errorEnergy += static_cast<double> (error) * error;
+    }
+    const auto nullDb = 10.0 * std::log10 (
+        juce::jmax (1.0e-30, errorEnergy)
+        / juce::jmax (1.0e-30, referenceEnergy));
+    context.expect (
+        nullDb < -70.0,
+        "Linear-phase bands do not null against the delayed input: "
+            + juce::String (nullDb) + " dB");
+
+    dd::MultibandProcessor automated;
+    automated.prepare (sampleRate, 256, 2);
+    multiband.phaseMode = 0;
+    multiband.bandCount = 4;
+    multiband.crossoverSlope = { 0, 1, 4 };
+    double automationPhase = 0.0;
+    auto maximumMagnitude = 0.0f;
+    for (int block = 0; block < 180; ++block)
+    {
+        fillSignal (buffer, automationPhase);
+        const auto sweep = static_cast<float> (block % 30) / 29.0f;
+        multiband.crossoverHz = {
+            35.0f * std::pow (10.0f, sweep),
+            450.0f * std::pow (8.0f, 1.0f - sweep),
+            5200.0f + 6500.0f * sweep
+        };
+        if (block % 17 == 0)
+        {
+            multiband.bandCount = 2 + (block / 17) % 3;
+            for (auto& slope : multiband.crossoverSlope)
+                slope = (slope + 1) % 5;
+        }
+        automated.process (buffer, master, multiband, -1);
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+            for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            {
+                const auto value = buffer.getSample (channel, sample);
+                context.expect (
+                    std::isfinite (value),
+                    "Minimum-phase crossover automation produced NaN/Inf");
+                maximumMagnitude = juce::jmax (
+                    maximumMagnitude, std::abs (value));
+            }
+    }
+    context.expect (
+        maximumMagnitude < 8.0f,
+        "Minimum-phase crossover automation produced an unbounded transient: "
+            + juce::String (maximumMagnitude));
 }
 
 double processModeFingerprint (int mode, int stages, float tone, TestContext& context)
@@ -2871,6 +3081,7 @@ int main (int argc, char** argv)
 
     TestContext context;
     testModeMetadata (context);
+    testMultibandCrossoversAndSmartGain (context);
     testCanonicalClipCeilings (context);
     testVitalClipTransfers (context);
     testClipMorphEndpointsAndHardPlateau (context);

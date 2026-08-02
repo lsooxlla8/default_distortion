@@ -73,6 +73,8 @@ public:
     void primeAutoGain (const Parameters&);
     void reset();
     void process (juce::AudioBuffer<float>& buffer, const Parameters& parameters);
+    void processBand (juce::AudioBuffer<float>& buffer,
+                      const Parameters& parameters);
 
     [[nodiscard]] int getLatencySamples() const noexcept { return fixedLatencySamples; }
     [[nodiscard]] float getSmartAutoGainProgress() const noexcept
@@ -315,6 +317,10 @@ private:
         int blockCount) noexcept;
     static float lookupDeterministicGain (
         const Parameters&, double sampleRate) noexcept;
+    void processInternal (juce::AudioBuffer<float>&,
+                          const Parameters&,
+                          bool allowSmartAutoGain,
+                          bool clampFinalOutput);
 
     double sampleRate = 44100.0;
     int preparedChannels = 2;

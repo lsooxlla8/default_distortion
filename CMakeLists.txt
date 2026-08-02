@@ -50,6 +50,8 @@ target_sources(DefaultDistortion
     PRIVATE
         Source/DistortionEngine.cpp
         Source/DistortionEngine.h
+        Source/MultibandProcessor.cpp
+        Source/MultibandProcessor.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
         Source/SecondaryAutoGainTable.h
@@ -102,6 +104,8 @@ target_sources(DefaultDistortionTests
     PRIVATE
         Source/DistortionEngine.cpp
         Source/DistortionEngine.h
+        Source/MultibandProcessor.cpp
+        Source/MultibandProcessor.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
         Source/SecondaryAutoGainTable.h

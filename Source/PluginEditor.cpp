@@ -714,6 +714,440 @@ ResponseDisplay::~ResponseDisplay()
     stopTimer();
 }
 
+MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
+    : processor (owner)
+{
+    inputSpectrum.fill (-60.0f);
+    outputSpectrum.fill (-60.0f);
+    for (auto* button : {
+             &linkButton, &bandCountButton, &phaseButton,
+             &soloButton, &bypassButton })
+        addAndMakeVisible (*button);
+
+    trimSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    trimSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 68, 24);
+    trimSlider.setRange (-12.0, 12.0, 0.01);
+    trimSlider.setDoubleClickReturnValue (true, 0.0);
+    trimSlider.textFromValueFunction = [] (double value)
+    {
+        const auto clean = std::abs (value) < 0.005 ? 0.0 : value;
+        return juce::String (clean, 1) + " dB";
+    };
+    addAndMakeVisible (trimSlider);
+
+    linkButton.onClick = [this]
+    {
+        processor.setMultibandLinkedFromUi (
+            ! processor.getCurrentMultibandParameters().linked);
+    };
+    bandCountButton.onClick = [this]
+    {
+        const auto count = processor.getCurrentMultibandParameters().bandCount;
+        setParameter (
+            ParamIDs::multibandBandCount,
+            static_cast<float> (count == 4 ? 0 : count - 1));
+    };
+    phaseButton.onClick = [this]
+    {
+        const auto phase = processor.getCurrentMultibandParameters().phaseMode;
+        setParameter (ParamIDs::multibandPhase, phase == 0 ? 1.0f : 0.0f);
+    };
+    soloButton.onClick = [this]
+    {
+        const auto selected = processor.getSelectedBand();
+        processor.setSoloBand (
+            processor.getSoloBand() == selected ? -1 : selected);
+    };
+    bypassButton.onClick = [this]
+    {
+        const auto selected = processor.getSelectedBand();
+        const auto multiband = processor.getCurrentMultibandParameters();
+        setParameter (
+            ParamIDs::band (selected, "Bypass"),
+            multiband.bands[static_cast<size_t> (selected)].bypass ? 0.0f : 1.0f);
+    };
+    trimSlider.onValueChange = [this]
+    {
+        setParameter (
+            ParamIDs::band (processor.getSelectedBand(), "Trim"),
+            static_cast<float> (trimSlider.getValue()));
+    };
+
+    setMouseCursor (juce::MouseCursor::NormalCursor);
+    startTimerHz (30);
+}
+
+MultibandPanel::~MultibandPanel()
+{
+    stopTimer();
+    processor.setSoloBand (-1);
+}
+
+void MultibandPanel::setParameter (const juce::String& id, float plainValue)
+{
+    if (auto* parameter = processor.parameters.getParameter (id))
+    {
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost (
+            parameter->convertTo0to1 (plainValue));
+        parameter->endChangeGesture();
+    }
+}
+
+juce::Rectangle<float> MultibandPanel::analyzerBounds() const
+{
+    auto bounds = getLocalBounds().toFloat().reduced (10.0f * scaleOf (*this));
+    bounds.removeFromBottom (42.0f * scaleOf (*this));
+    return bounds;
+}
+
+float MultibandPanel::frequencyToX (float frequency) const
+{
+    const auto bounds = analyzerBounds();
+    const auto maximum = static_cast<float> (
+        juce::jmin (20000.0, 0.45 * juce::jmax (1.0, processor.getSampleRate())));
+    const auto normalised = std::log (juce::jlimit (20.0f, maximum, frequency) / 20.0f)
+        / std::log (maximum / 20.0f);
+    return bounds.getX() + normalised * bounds.getWidth();
+}
+
+float MultibandPanel::xToFrequency (float x) const
+{
+    const auto bounds = analyzerBounds();
+    const auto maximum = static_cast<float> (
+        juce::jmin (20000.0, 0.45 * juce::jmax (1.0, processor.getSampleRate())));
+    const auto normalised = juce::jlimit (
+        0.0f, 1.0f, (x - bounds.getX()) / bounds.getWidth());
+    return 20.0f * std::pow (maximum / 20.0f, normalised);
+}
+
+int MultibandPanel::crossoverAt (juce::Point<float> position,
+                                 bool badgeOnly) const
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    const auto bounds = analyzerBounds();
+    for (int crossover = 0; crossover < parameters.bandCount - 1; ++crossover)
+    {
+        const auto x = frequencyToX (
+            parameters.crossoverHz[static_cast<size_t> (crossover)]);
+        const auto hit = badgeOnly
+            ? juce::Rectangle<float> {
+                x - 38.0f, bounds.getBottom() - 32.0f, 76.0f, 23.0f }
+            : juce::Rectangle<float> {
+                x - 8.0f, bounds.getY(), 16.0f, bounds.getHeight() };
+        if (hit.contains (position))
+            return crossover;
+    }
+    return -1;
+}
+
+int MultibandPanel::bandAt (float x) const
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    for (int crossover = 0; crossover < parameters.bandCount - 1; ++crossover)
+        if (x < frequencyToX (
+                parameters.crossoverHz[static_cast<size_t> (crossover)]))
+            return crossover;
+    return parameters.bandCount - 1;
+}
+
+void MultibandPanel::showSlopeMenu (int crossover)
+{
+    juce::PopupMenu menu;
+    constexpr std::array<int, 5> slopes { 6, 12, 24, 36, 48 };
+    const auto selected = processor.getCurrentMultibandParameters()
+        .crossoverSlope[static_cast<size_t> (crossover)];
+    for (int index = 0; index < static_cast<int> (slopes.size()); ++index)
+        menu.addItem (
+            index + 1,
+            juce::String (slopes[static_cast<size_t> (index)]) + " dB/oct",
+            true,
+            index == selected);
+    const auto safeThis = juce::Component::SafePointer<MultibandPanel> (this);
+    menu.showMenuAsync (
+        juce::PopupMenu::Options {}
+            .withTargetScreenArea (
+                localAreaToGlobal (
+                    juce::Rectangle<int> (
+                        juce::roundToInt (frequencyToX (
+                            processor.getCurrentMultibandParameters()
+                                .crossoverHz[static_cast<size_t> (crossover)])) - 38,
+                        juce::roundToInt (analyzerBounds().getBottom() - 32),
+                        76, 23))),
+        [safeThis, crossover] (int result)
+        {
+            if (safeThis != nullptr && result > 0)
+                safeThis->setParameter (
+                    ParamIDs::crossoverSlope (crossover),
+                    static_cast<float> (result - 1));
+        });
+}
+
+void MultibandPanel::timerCallback()
+{
+    const auto received = processor.pullAnalyzerSamples (
+        incomingInput.data(), incomingOutput.data(),
+        static_cast<int> (incomingInput.size()));
+    for (int sample = 0; sample < received; ++sample)
+    {
+        inputHistory[static_cast<size_t> (historyPosition)] =
+            incomingInput[static_cast<size_t> (sample)];
+        outputHistory[static_cast<size_t> (historyPosition)] =
+            incomingOutput[static_cast<size_t> (sample)];
+        historyPosition = (historyPosition + 1) % fftSize;
+    }
+    if (received > 0)
+        updateSpectrum();
+    updateControls();
+    repaint();
+}
+
+void MultibandPanel::updateSpectrum()
+{
+    inputFft.fill (0.0f);
+    outputFft.fill (0.0f);
+    for (int sample = 0; sample < fftSize; ++sample)
+    {
+        const auto source = (historyPosition + sample) % fftSize;
+        inputFft[static_cast<size_t> (sample)] =
+            inputHistory[static_cast<size_t> (source)];
+        outputFft[static_cast<size_t> (sample)] =
+            outputHistory[static_cast<size_t> (source)];
+    }
+    window.multiplyWithWindowingTable (inputFft.data(), fftSize);
+    window.multiplyWithWindowingTable (outputFft.data(), fftSize);
+    fft.performFrequencyOnlyForwardTransform (inputFft.data());
+    fft.performFrequencyOnlyForwardTransform (outputFft.data());
+    for (int bin = 1; bin < fftSize / 2; ++bin)
+    {
+        const auto normalise = 2.0f / static_cast<float> (fftSize);
+        const auto inputDb = juce::Decibels::gainToDecibels (
+            inputFft[static_cast<size_t> (bin)] * normalise, -60.0f);
+        const auto outputDb = juce::Decibels::gainToDecibels (
+            outputFft[static_cast<size_t> (bin)] * normalise, -60.0f);
+        auto smooth = [] (float previous, float next)
+        {
+            const auto amount = next > previous ? 0.58f : 0.12f;
+            return previous + amount * (next - previous);
+        };
+        inputSpectrum[static_cast<size_t> (bin)] = smooth (
+            inputSpectrum[static_cast<size_t> (bin)], inputDb);
+        outputSpectrum[static_cast<size_t> (bin)] = smooth (
+            outputSpectrum[static_cast<size_t> (bin)], outputDb);
+    }
+}
+
+void MultibandPanel::updateControls()
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    const auto selected = juce::jlimit (
+        0, parameters.bandCount - 1, processor.getSelectedBand());
+    if (selected != processor.getSelectedBand())
+        processor.setSelectedBand (selected);
+    linkButton.setToggleState (parameters.linked, juce::dontSendNotification);
+    bandCountButton.setButtonText (
+        juce::String (parameters.bandCount) + " BANDS");
+    phaseButton.setButtonText (
+        parameters.phaseMode == 0 ? "MIN PHASE" : "LINEAR PHASE");
+    phaseButton.setToggleState (
+        parameters.phaseMode == 1, juce::dontSendNotification);
+    soloButton.setToggleState (
+        processor.getSoloBand() == selected, juce::dontSendNotification);
+    bypassButton.setToggleState (
+        parameters.bands[static_cast<size_t> (selected)].bypass,
+        juce::dontSendNotification);
+    const auto trim = parameters.bands[static_cast<size_t> (selected)].trimDb;
+    if (! trimSlider.isMouseButtonDown())
+        trimSlider.setValue (trim, juce::dontSendNotification);
+}
+
+void MultibandPanel::paint (juce::Graphics& graphics)
+{
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    const auto muted = mutedOf (*this);
+    graphics.fillAll (foreground);
+    const auto bounds = analyzerBounds();
+    graphics.setColour (background);
+    graphics.fillRect (bounds);
+    graphics.setColour (foreground);
+    graphics.drawRect (bounds, 2.0f * scaleOf (*this));
+
+    const auto parameters = processor.getCurrentMultibandParameters();
+    const auto selected = processor.getSelectedBand();
+    auto left = bounds.getX();
+    for (int band = 0; band < parameters.bandCount; ++band)
+    {
+        const auto right = band < parameters.bandCount - 1
+            ? frequencyToX (parameters.crossoverHz[static_cast<size_t> (band)])
+            : bounds.getRight();
+        if (band == selected)
+        {
+            graphics.setColour (foreground.withAlpha (0.11f));
+            graphics.fillRect (juce::Rectangle<float> {
+                left, bounds.getY(), right - left, bounds.getHeight() });
+        }
+        graphics.setColour (foreground.withAlpha (0.55f));
+        graphics.setFont (monoFont (11.0f * scaleOf (*this), true));
+        graphics.drawText (
+            "B" + juce::String (band + 1),
+            juce::Rectangle<float> { left + 6.0f, bounds.getY() + 5.0f,
+                                     30.0f, 16.0f },
+            juce::Justification::centredLeft);
+        left = right;
+    }
+
+    graphics.setColour (foreground.withAlpha (0.13f));
+    for (const auto db : { -60, -48, -36, -24, -12, 0 })
+    {
+        const auto y = bounds.getY()
+            + (static_cast<float> (-db) / 60.0f) * bounds.getHeight();
+        graphics.drawHorizontalLine (
+            juce::roundToInt (y), bounds.getX(), bounds.getRight());
+    }
+    for (const auto frequency : {
+             20.0f, 50.0f, 100.0f, 200.0f, 500.0f,
+             1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f })
+    {
+        const auto x = frequencyToX (frequency);
+        graphics.drawVerticalLine (
+            juce::roundToInt (x), bounds.getY(), bounds.getBottom());
+    }
+
+    const auto makePath = [&] (const auto& spectrum)
+    {
+        juce::Path path;
+        const auto rate = processor.getSampleRate() > 0.0
+            ? processor.getSampleRate() : 48000.0;
+        auto started = false;
+        for (int bin = 1; bin < fftSize / 2; ++bin)
+        {
+            const auto frequency = static_cast<float> (bin * rate / fftSize);
+            if (frequency < 20.0f || frequency > 20000.0f)
+                continue;
+            const auto x = frequencyToX (frequency);
+            const auto db = juce::jlimit (
+                -60.0f, 0.0f, spectrum[static_cast<size_t> (bin)]);
+            const auto y = bounds.getY() + (-db / 60.0f) * bounds.getHeight();
+            if (! started)
+            {
+                path.startNewSubPath (x, y);
+                started = true;
+            }
+            else
+                path.lineTo (x, y);
+        }
+        return path;
+    };
+    graphics.setColour (muted.withAlpha (0.72f));
+    graphics.strokePath (
+        makePath (inputSpectrum),
+        juce::PathStrokeType (1.25f * scaleOf (*this)));
+    graphics.setColour (foreground);
+    graphics.strokePath (
+        makePath (outputSpectrum),
+        juce::PathStrokeType (2.0f * scaleOf (*this)));
+
+    constexpr std::array<int, 5> slopes { 6, 12, 24, 36, 48 };
+    for (int crossover = 0; crossover < parameters.bandCount - 1; ++crossover)
+    {
+        const auto x = frequencyToX (
+            parameters.crossoverHz[static_cast<size_t> (crossover)]);
+        graphics.setColour (foreground);
+        graphics.fillRect (x - 1.0f, bounds.getY(), 2.0f, bounds.getHeight());
+        if (hoveredCrossover == crossover || draggedCrossover == crossover)
+        {
+            const auto badge = juce::Rectangle<float> {
+                x - 38.0f, bounds.getBottom() - 32.0f, 76.0f, 23.0f };
+            graphics.setColour (foreground);
+            graphics.fillRect (badge);
+            graphics.setColour (background);
+            graphics.setFont (monoFont (10.0f * scaleOf (*this), true));
+            graphics.drawText (
+                juce::String (slopes[static_cast<size_t> (
+                    parameters.crossoverSlope[static_cast<size_t> (crossover)])])
+                    + " dB/oct",
+                badge,
+                juce::Justification::centred);
+        }
+    }
+}
+
+void MultibandPanel::resized()
+{
+    auto toolbar = getLocalBounds().reduced (
+        juce::roundToInt (10.0f * scaleOf (*this)));
+    toolbar = toolbar.removeFromBottom (
+        juce::roundToInt (34.0f * scaleOf (*this)));
+    const auto gap = juce::roundToInt (5.0f * scaleOf (*this));
+    linkButton.setBounds (toolbar.removeFromLeft (90).reduced (0, 1));
+    toolbar.removeFromLeft (gap);
+    bandCountButton.setBounds (toolbar.removeFromLeft (100).reduced (0, 1));
+    toolbar.removeFromLeft (gap);
+    phaseButton.setBounds (toolbar.removeFromLeft (120).reduced (0, 1));
+    toolbar.removeFromLeft (gap);
+    soloButton.setBounds (toolbar.removeFromLeft (75).reduced (0, 1));
+    toolbar.removeFromLeft (gap);
+    bypassButton.setBounds (toolbar.removeFromLeft (85).reduced (0, 1));
+    toolbar.removeFromLeft (gap);
+    trimSlider.setBounds (toolbar);
+}
+
+void MultibandPanel::mouseMove (const juce::MouseEvent& event)
+{
+    hoveredCrossover = crossoverAt (event.position, false);
+    setMouseCursor (hoveredCrossover >= 0
+        ? juce::MouseCursor::LeftRightResizeCursor
+        : juce::MouseCursor::NormalCursor);
+    repaint();
+}
+
+void MultibandPanel::mouseExit (const juce::MouseEvent&)
+{
+    if (draggedCrossover < 0)
+        hoveredCrossover = -1;
+    repaint();
+}
+
+void MultibandPanel::mouseDown (const juce::MouseEvent& event)
+{
+    const auto badge = crossoverAt (event.position, true);
+    if (badge >= 0 && badge == hoveredCrossover)
+    {
+        showSlopeMenu (badge);
+        return;
+    }
+    draggedCrossover = crossoverAt (event.position, false);
+    if (draggedCrossover < 0 && analyzerBounds().contains (event.position))
+        processor.setSelectedBand (bandAt (event.position.x));
+}
+
+void MultibandPanel::mouseDrag (const juce::MouseEvent& event)
+{
+    if (draggedCrossover < 0)
+        return;
+    auto frequency = xToFrequency (event.position.x);
+    const auto parameters = processor.getCurrentMultibandParameters();
+    constexpr auto ratio = 1.2599210498948732f;
+    const auto lower = draggedCrossover == 0
+        ? 20.0f
+        : parameters.crossoverHz[static_cast<size_t> (draggedCrossover - 1)]
+            * ratio;
+    const auto maximum = static_cast<float> (
+        juce::jmin (20000.0, 0.45 * juce::jmax (1.0, processor.getSampleRate())));
+    const auto upper = draggedCrossover >= parameters.bandCount - 2
+        ? maximum
+        : parameters.crossoverHz[static_cast<size_t> (draggedCrossover + 1)]
+            / ratio;
+    frequency = juce::jlimit (lower, upper, frequency);
+    setParameter (ParamIDs::crossoverFrequency (draggedCrossover), frequency);
+}
+
+void MultibandPanel::mouseUp (const juce::MouseEvent&)
+{
+    draggedCrossover = -1;
+}
+
 void ResponseDisplay::timerCallback()
 {
     repaint();
@@ -730,27 +1164,12 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
     graphics.setColour (background);
     graphics.drawRect (bounds, 3.0f * scale);
 
-    const auto parameters = processor.getCurrentParameters();
-    const auto mode = juce::jlimit (0, DistortionEngine::modeCount - 1, parameters.mode);
-    const auto displayPosition =
-        DistortionEngine::getDisplayPositionForMode (mode);
-    const auto& names = DistortionEngine::getModeNames();
-
-    auto header = bounds.reduced (12.0f * scale).removeFromTop (
-        38.0f * scale);
-    graphics.setColour (background);
-    graphics.setFont (monoFont (25.0f * scale, true));
-    graphics.drawText (
-        juce::String (displayPosition + 1).paddedLeft ('0', 2),
-        header.removeFromLeft (48.0f * scale),
-        juce::Justification::centredLeft);
-    graphics.setFont (monoFont (12.0f * scale, true));
-    graphics.drawFittedText (
-        names[static_cast<size_t> (mode)].toUpperCase(),
-        header.toNearestInt(),
-        juce::Justification::centredLeft,
-        2);
-
+    auto parameters = processor.getCurrentParameters();
+    const auto multiband = processor.getCurrentMultibandParameters();
+    if (multiband.enabled && ! multiband.linked)
+        parameters = multiband.bands[static_cast<size_t> (
+            juce::jlimit (0, multiband.bandCount - 1,
+                          processor.getSelectedBand()))].saturation;
     const auto displaySampleRate =
         processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0;
     const auto visualizationChanged =
@@ -776,7 +1195,6 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
     }
 
     auto graph = bounds.reduced (12.0f * scale);
-    graph.removeFromTop (42.0f * scale);
     graph.removeFromBottom (31.0f * scale);
     graphics.setColour (background);
     graphics.fillRect (graph);
@@ -844,14 +1262,22 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     DefaultDistortionAudioProcessor& owner)
     : AudioProcessorEditor (&owner),
       ownerProcessor (owner),
-      responseDisplay (owner)
+      responseDisplay (owner),
+      multibandPanel (owner)
 {
+    ownerProcessor.setAnalyzerEnabled (true);
     setLookAndFeel (&lookAndFeel);
     setOpaque (true);
     setResizable (true, true);
-    getConstrainer()->setFixedAspectRatio (860.0 / 354.0);
-    setResizeLimits (720, 296, 1200, 494);
-    setSize (860, 354);
+    const auto initiallyExpanded =
+        ownerProcessor.getCurrentMultibandParameters().enabled;
+    multibandVisible = initiallyExpanded;
+    getConstrainer()->setFixedAspectRatio (
+        860.0 / (initiallyExpanded ? 620.0 : 354.0));
+    setResizeLimits (
+        720, initiallyExpanded ? 519 : 296,
+        1200, initiallyExpanded ? 865 : 494);
+    setSize (860, initiallyExpanded ? 620 : 354);
 
     brandLabel.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     brandLabel.onClick = [this] { togglePalette(); };
@@ -880,6 +1306,10 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
         addAndMakeVisible (*control);
     }
     addAndMakeVisible (responseDisplay);
+    multibandButton.setClickingTogglesState (true);
+    addAndMakeVisible (multibandButton);
+    addAndMakeVisible (multibandPanel);
+    multibandPanel.setVisible (initiallyExpanded);
 
     // ParameterControl paints an opaque background. Keep the linked vertical
     // controls above their neighbouring knobs so neither the connector nor
@@ -935,25 +1365,101 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     quality.slider.setDoubleClickReturnValue (true, 0.0);
 
     auto& state = ownerProcessor.parameters;
-    driveAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::drive, drive.slider);
-    secondaryAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::secondary, secondarySlider);
-    asymAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::asym, asym.slider);
-    asymStereoAttachment = std::make_unique<ButtonAttachment> (
-        state, ParamIDs::asymStereo, asymStereoButton);
-    toneAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::tone, tone.slider);
-    stagesAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::stages, stages.slider);
-    mixAttachment = std::make_unique<SliderAttachment> (
-        state, ParamIDs::mix, mix.slider);
     outputAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::output, output.slider);
     qualityAttachment = std::make_unique<SliderAttachment> (
         state, ParamIDs::quality, quality.slider);
-    if (auto* parameter = state.getParameter (ParamIDs::mode))
+    multibandAttachment = std::make_unique<ButtonAttachment> (
+        state, ParamIDs::multibandEnabled, multibandButton);
+    if (auto* parameter = state.getParameter (ParamIDs::autoGain))
+    {
+        autoGainAttachment = std::make_unique<juce::ParameterAttachment> (
+            *parameter,
+            [this] (float value)
+            {
+                updateAutoGainButton (juce::roundToInt (value));
+            });
+        autoGainAttachment->sendInitialUpdate();
+    }
+    character.slider.onDragStart = [this]
+    {
+        if (characterAttachment != nullptr)
+            characterAttachment->beginGesture();
+    };
+    character.slider.onValueChange = [this]
+    {
+        if (! updatingCharacter && characterAttachment != nullptr)
+            characterAttachment->setValueAsPartOfGesture (
+                static_cast<float> (character.slider.getValue() / 100.0));
+    };
+    character.slider.onDragEnd = [this]
+    {
+        if (characterAttachment != nullptr)
+            characterAttachment->endGesture();
+    };
+    rebindContextualControls();
+    timerCallback();
+    startTimerHz (12);
+}
+
+DefaultDistortionAudioProcessorEditor::~DefaultDistortionAudioProcessorEditor()
+{
+    stopTimer();
+    ownerProcessor.setAnalyzerEnabled (false);
+    setLookAndFeel (nullptr);
+}
+
+void DefaultDistortionAudioProcessorEditor::configureKnob (
+    ParameterControl& control)
+{
+    control.slider.setMouseDragSensitivity (180);
+}
+
+void DefaultDistortionAudioProcessorEditor::rebindContextualControls()
+{
+    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
+    const auto targetBand = multiband.enabled && ! multiband.linked
+        ? juce::jlimit (0, multiband.bandCount - 1,
+                        ownerProcessor.getSelectedBand())
+        : -1;
+    if (targetBand == boundBand)
+        return;
+    boundBand = targetBand;
+
+    driveAttachment.reset();
+    secondaryAttachment.reset();
+    asymAttachment.reset();
+    asymStereoAttachment.reset();
+    toneAttachment.reset();
+    stagesAttachment.reset();
+    mixAttachment.reset();
+    modeAttachment.reset();
+    characterAttachment.reset();
+
+    const auto id = [targetBand] (const char* master, const char* bandSuffix)
+    {
+        return targetBand < 0
+            ? juce::String (master)
+            : ParamIDs::band (targetBand, bandSuffix);
+    };
+    auto& state = ownerProcessor.parameters;
+    driveAttachment = std::make_unique<SliderAttachment> (
+        state, id (ParamIDs::drive, "Drive"), drive.slider);
+    secondaryAttachment = std::make_unique<SliderAttachment> (
+        state, id (ParamIDs::secondary, "Secondary"), secondarySlider);
+    asymAttachment = std::make_unique<SliderAttachment> (
+        state, id (ParamIDs::asym, "Asym"), asym.slider);
+    asymStereoAttachment = std::make_unique<ButtonAttachment> (
+        state, id (ParamIDs::asymStereo, "AsymStereo"), asymStereoButton);
+    toneAttachment = std::make_unique<SliderAttachment> (
+        state, id (ParamIDs::tone, "Tone"), tone.slider);
+    stagesAttachment = std::make_unique<SliderAttachment> (
+        state, id (ParamIDs::stages, "Stages"), stages.slider);
+    mixAttachment = std::make_unique<SliderAttachment> (
+        state, id (ParamIDs::mix, "Mix"), mix.slider);
+
+    const auto modeId = id (ParamIDs::mode, "Mode");
+    if (auto* parameter = state.getParameter (modeId))
     {
         modeAttachment = std::make_unique<juce::ParameterAttachment> (
             *parameter,
@@ -976,18 +1482,9 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
             });
         modeAttachment->sendInitialUpdate();
     }
-    if (auto* parameter = state.getParameter (ParamIDs::autoGain))
-    {
-        autoGainAttachment = std::make_unique<juce::ParameterAttachment> (
-            *parameter,
-            [this] (float value)
-            {
-                updateAutoGainButton (juce::roundToInt (value));
-            });
-        autoGainAttachment->sendInitialUpdate();
-    }
 
-    if (auto* parameter = state.getParameter (ParamIDs::character))
+    const auto characterId = id (ParamIDs::character, "Character");
+    if (auto* parameter = state.getParameter (characterId))
     {
         characterAttachment = std::make_unique<juce::ParameterAttachment> (
             *parameter,
@@ -1001,48 +1498,44 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
                 character.slider.setValue (
                     100.0 * shownValue, juce::dontSendNotification);
             });
-        character.slider.onDragStart = [this]
-        {
-            if (characterAttachment != nullptr)
-                characterAttachment->beginGesture();
-        };
-        character.slider.onValueChange = [this]
-        {
-            if (! updatingCharacter && characterAttachment != nullptr)
-                characterAttachment->setValueAsPartOfGesture (
-                    static_cast<float> (character.slider.getValue() / 100.0));
-        };
-        character.slider.onDragEnd = [this]
-        {
-            if (characterAttachment != nullptr)
-                characterAttachment->endGesture();
-        };
-    }
-
-    updateCharacterControl (ownerProcessor.getCurrentParameters().mode);
-    if (characterAttachment != nullptr)
         characterAttachment->sendInitialUpdate();
-    timerCallback();
-    startTimerHz (12);
+    }
 }
 
-DefaultDistortionAudioProcessorEditor::~DefaultDistortionAudioProcessorEditor()
+void DefaultDistortionAudioProcessorEditor::updateMultibandVisibility (
+    bool enabled,
+    bool resizeEditor)
 {
-    stopTimer();
-    setLookAndFeel (nullptr);
-}
-
-void DefaultDistortionAudioProcessorEditor::configureKnob (
-    ParameterControl& control)
-{
-    control.slider.setMouseDragSensitivity (180);
+    if (enabled == multibandVisible && ! resizeEditor)
+        return;
+    multibandVisible = enabled;
+    multibandPanel.setVisible (enabled);
+    const auto targetHeight = enabled ? 620.0 : 354.0;
+    getConstrainer()->setFixedAspectRatio (860.0 / targetHeight);
+    setResizeLimits (
+        720, enabled ? 519 : 296,
+        1200, enabled ? 865 : 494);
+    if (resizeEditor)
+    {
+        const auto scale = static_cast<double> (getWidth()) / 860.0;
+        setSize (getWidth(), juce::roundToInt (targetHeight * scale));
+    }
+    resized();
+    repaint();
 }
 
 void DefaultDistortionAudioProcessorEditor::showModeMenu()
 {
     juce::PopupMenu menu;
     menu.setLookAndFeel (&lookAndFeel);
-    const auto currentMode = ownerProcessor.getCurrentParameters().mode;
+    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
+    const auto contextBand = multiband.enabled && ! multiband.linked
+        ? juce::jlimit (0, multiband.bandCount - 1,
+                        ownerProcessor.getSelectedBand())
+        : -1;
+    const auto currentMode = contextBand < 0
+        ? ownerProcessor.getCurrentParameters().mode
+        : multiband.bands[static_cast<size_t> (contextBand)].saturation.mode;
     const auto& names = DistortionEngine::getModeNames();
     const auto displaySampleRate =
         ownerProcessor.getSampleRate() > 0.0
@@ -1089,7 +1582,15 @@ void DefaultDistortionAudioProcessorEditor::selectMode (int mode)
 {
     const auto selected = juce::jlimit (
         0, DistortionEngine::modeCount - 1, mode);
-    if (auto* parameter = ownerProcessor.parameters.getParameter (ParamIDs::mode))
+    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
+    const auto contextBand = multiband.enabled && ! multiband.linked
+        ? juce::jlimit (0, multiband.bandCount - 1,
+                        ownerProcessor.getSelectedBand())
+        : -1;
+    const auto modeId = contextBand < 0
+        ? juce::String (ParamIDs::mode)
+        : ParamIDs::band (contextBand, "Mode");
+    if (auto* parameter = ownerProcessor.parameters.getParameter (modeId))
     {
         parameter->beginChangeGesture();
         parameter->setValueNotifyingHost (
@@ -1102,8 +1603,10 @@ void DefaultDistortionAudioProcessorEditor::selectMode (int mode)
     if (characterAttachment != nullptr)
         characterAttachment->setValueAsCompleteGesture (
             DistortionEngine::getDefaultCharacter (selected));
-    if (auto* parameter = ownerProcessor.parameters.getParameter (
-            ParamIDs::secondary))
+    const auto secondaryId = contextBand < 0
+        ? juce::String (ParamIDs::secondary)
+        : ParamIDs::band (contextBand, "Secondary");
+    if (auto* parameter = ownerProcessor.parameters.getParameter (secondaryId))
     {
         parameter->beginChangeGesture();
         parameter->setValueNotifyingHost (
@@ -1115,9 +1618,16 @@ void DefaultDistortionAudioProcessorEditor::selectMode (int mode)
 
 void DefaultDistortionAudioProcessorEditor::stepMode (int delta)
 {
+    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
+    const auto contextBand = multiband.enabled && ! multiband.linked
+        ? juce::jlimit (0, multiband.bandCount - 1,
+                        ownerProcessor.getSelectedBand())
+        : -1;
     const auto current = juce::jlimit (
         0, DistortionEngine::modeCount - 1,
-        ownerProcessor.getCurrentParameters().mode);
+        contextBand < 0
+            ? ownerProcessor.getCurrentParameters().mode
+            : multiband.bands[static_cast<size_t> (contextBand)].saturation.mode);
     const auto currentPosition =
         DistortionEngine::getDisplayPositionForMode (current);
     const auto nextPosition =
@@ -1225,10 +1735,20 @@ void DefaultDistortionAudioProcessorEditor::timerCallback()
         nextBrandGlitchTimeMs = nowMs + 4000.0;
     }
 
+    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
+    if (multiband.enabled != multibandVisible)
+        updateMultibandVisibility (multiband.enabled, true);
+    rebindContextualControls();
+    const auto contextBand = multiband.enabled && ! multiband.linked
+        ? juce::jlimit (0, multiband.bandCount - 1,
+                        ownerProcessor.getSelectedBand())
+        : -1;
     const auto mode = juce::jlimit (
         0,
         DistortionEngine::modeCount - 1,
-        ownerProcessor.getCurrentParameters().mode);
+        contextBand < 0
+            ? ownerProcessor.getCurrentParameters().mode
+            : multiband.bands[static_cast<size_t> (contextBand)].saturation.mode);
     if (mode != displayedMode)
     {
         updateCharacterControl (mode);
@@ -1251,13 +1771,14 @@ void DefaultDistortionAudioProcessorEditor::timerCallback()
 
 void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
 {
+    const auto designHeight = multibandVisible ? 620.0f : 354.0f;
     const auto scale = juce::jmin (
         static_cast<float> (getWidth()) / 860.0f,
-        static_cast<float> (getHeight()) / 354.0f);
+        static_cast<float> (getHeight()) / designHeight);
     const auto offsetX =
         0.5f * (static_cast<float> (getWidth()) - 860.0f * scale);
     const auto offsetY =
-        0.5f * (static_cast<float> (getHeight()) - 354.0f * scale);
+        0.5f * (static_cast<float> (getHeight()) - designHeight * scale);
     auto rect = [scale, offsetX, offsetY] (
                     float x, float y, float width, float height)
     {
@@ -1284,13 +1805,14 @@ void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
 
 void DefaultDistortionAudioProcessorEditor::resized()
 {
+    const auto designHeight = multibandVisible ? 620.0f : 354.0f;
     const auto scale = juce::jmin (
         static_cast<float> (getWidth()) / 860.0f,
-        static_cast<float> (getHeight()) / 354.0f);
+        static_cast<float> (getHeight()) / designHeight);
     const auto offsetX = juce::roundToInt (
         0.5f * (static_cast<float> (getWidth()) - 860.0f * scale));
     const auto offsetY = juce::roundToInt (
-        0.5f * (static_cast<float> (getHeight()) - 354.0f * scale));
+        0.5f * (static_cast<float> (getHeight()) - designHeight * scale));
     lookAndFeel.setUiScale (scale);
     for (auto* control : {
              &drive, &character, &asym, &tone,
@@ -1326,7 +1848,9 @@ void DefaultDistortionAudioProcessorEditor::resized()
     quality.setBounds (scaled (272, 212, controlWidth, controlHeight));
     mix.setBounds (scaled (401, 212, controlWidth, controlHeight));
 
-    responseDisplay.setBounds (scaled (544, 78, 302, 262));
+    responseDisplay.setBounds (scaled (544, 78, 302, 218));
+    multibandButton.setBounds (scaled (544, 304, 302, 36));
+    multibandPanel.setBounds (scaled (0, 354, 860, 266));
     sendLookAndFeelChange();
 }
 } // namespace dd
