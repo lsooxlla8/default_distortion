@@ -1591,6 +1591,141 @@ void testTapeOversamplingConsistency (TestContext& context)
             + juce::String (spreadDb, 2) + " dB)");
 }
 
+struct TapeSteadyStateMetrics
+{
+    double mean = 0.0;
+    double acRms = 0.0;
+    double cycleError = 0.0;
+    bool finite = true;
+};
+
+TapeSteadyStateMetrics measureTapeSteadyState (float hysteresis,
+                                                float bias,
+                                                int stages)
+{
+    constexpr int tapeBlockSize = 480;
+    constexpr int periodSamples = 48;
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, tapeBlockSize, 1);
+
+    dd::Parameters parameters;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::tapeHysteresis);
+    parameters.driveDb = 36.0f;
+    parameters.character = hysteresis;
+    parameters.secondary = bias;
+    parameters.asymmetry = 0.0f;
+    parameters.stages = stages;
+    parameters.mix = 1.0f;
+    parameters.outputDb = 0.01f;
+    parameters.quality = 1;
+    parameters.autoGainMode = 0;
+
+    juce::AudioBuffer<float> buffer (1, tapeBlockSize);
+    std::array<float, tapeBlockSize> captured {};
+    double phase = 0.0;
+    for (int block = 0; block < 160; ++block)
+    {
+        for (int sample = 0; sample < tapeBlockSize; ++sample)
+        {
+            buffer.setSample (
+                0,
+                sample,
+                0.35f * static_cast<float> (std::sin (phase)));
+            phase += juce::MathConstants<double>::twoPi
+                / static_cast<double> (periodSamples);
+        }
+        engine.process (buffer, parameters);
+        if (block == 159)
+            std::copy (
+                buffer.getReadPointer (0),
+                buffer.getReadPointer (0) + tapeBlockSize,
+                captured.begin());
+    }
+
+    TapeSteadyStateMetrics result;
+    for (const auto value : captured)
+    {
+        result.finite = result.finite && std::isfinite (value);
+        result.mean += value;
+    }
+    result.mean /= static_cast<double> (captured.size());
+    for (const auto value : captured)
+    {
+        const auto centred = static_cast<double> (value) - result.mean;
+        result.acRms += centred * centred;
+    }
+    result.acRms = std::sqrt (
+        result.acRms / static_cast<double> (captured.size()));
+
+    double cycleDifference = 0.0;
+    for (int sample = tapeBlockSize - periodSamples;
+         sample < tapeBlockSize;
+         ++sample)
+    {
+        const auto difference = static_cast<double> (
+            captured[static_cast<size_t> (sample)]
+            - captured[static_cast<size_t> (sample - periodSamples)]);
+        cycleDifference += difference * difference;
+    }
+    result.cycleError = std::sqrt (
+        cycleDifference / static_cast<double> (periodSamples))
+        / juce::jmax (1.0e-12, result.acRms);
+    return result;
+}
+
+void testTapeDoesNotCollapseOrModulate (TestContext& context)
+{
+    const auto referenceModel = dd::chowtape::makeModel (
+        1.0, 1.0, 0.5);
+    context.expect (
+        std::abs (referenceModel.saturation - 0.5) < 1.0e-12
+            && std::abs (
+                referenceModel.domainScale - 0.5 / 6.01) < 1.0e-12
+            && std::abs (
+                referenceModel.reversibility
+                    - (std::sqrt (0.5) - 0.01)) < 1.0e-12
+            && std::abs (referenceModel.outputMakeup - 2.6) < 1.0e-12,
+        "Tape controls no longer map to the CHOW reference model");
+
+    for (const auto hysteresis : { 0.0f, 1.0f })
+        for (const auto bias : { 0.5f, 1.0f })
+            for (const auto stages : { 1, 8 })
+            {
+                const auto metrics = measureTapeSteadyState (
+                    hysteresis, bias, stages);
+                const auto description =
+                    " at Hysteresis " + juce::String (hysteresis)
+                    + ", Bias " + juce::String (bias)
+                    + ", Stages " + juce::String (stages);
+                context.expect (
+                    metrics.finite && metrics.acRms > 1.0e-3,
+                    "Tape collapsed to DC" + description);
+                context.expect (
+                    std::abs (metrics.mean)
+                        <= 0.1 * juce::jmax (1.0e-12, metrics.acRms),
+                    "Tape retained excessive DC" + description
+                        + " (DC/AC "
+                        + juce::String (
+                            std::abs (metrics.mean)
+                                / juce::jmax (1.0e-12, metrics.acRms),
+                            3)
+                        + ")");
+                context.expect (
+                    std::isfinite (metrics.cycleError)
+                        && metrics.cycleError < 0.01,
+                    "Tape has a non-periodic modulation component"
+                        + description + " (cycle error "
+                        + juce::String (metrics.cycleError, 4) + ")");
+            }
+
+    const auto referenceCascade = measureTapeSteadyState (1.0f, 0.5f, 8);
+    context.expect (
+        std::abs (referenceCascade.acRms - 1.188) < 0.025,
+        "Tape stages no longer retain the inter-stage CHOW oversampling "
+        "response (RMS " + juce::String (referenceCascade.acRms, 4) + ")");
+}
+
 double measureAliasComponent (int oversampling)
 {
     dd::DistortionEngine engine;
@@ -3172,6 +3307,7 @@ int main (int argc, char** argv)
     testDriveStartsContinuously (context);
     testDigitalClockIgnoresOversampling (context);
     testTapeOversamplingConsistency (context);
+    testTapeDoesNotCollapseOrModulate (context);
     testOversamplingReducesAliasing (context);
     testSmartAutoGainFreezes (context);
     testStereoAsymmetryUsesOppositePolarities (context);
