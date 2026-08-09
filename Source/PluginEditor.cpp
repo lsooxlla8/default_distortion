@@ -8,8 +8,37 @@ namespace dd
 {
 namespace
 {
-const auto lightPalette = juce::Colour (0xfff6f6f2);
+const auto lightPalette = juce::Colour (0xfff6f6f6);
 const auto darkPalette = juce::Colour (0xff050505);
+constexpr std::array<float, MultibandParameters::maximumCrossovers>
+    defaultCrossoverFrequencies { 100.0f, 500.0f, 2000.0f };
+
+juce::PropertiesFile& themeProperties()
+{
+    static juce::PropertiesFile properties ([]
+    {
+        juce::PropertiesFile::Options options;
+        options.applicationName = "default_distortion-ui";
+        options.filenameSuffix = "settings";
+        options.folderName = "icanseesounds";
+        options.osxLibrarySubFolder = "Application Support";
+        options.millisecondsBeforeSaving = 0;
+        return options;
+    }());
+    return properties;
+}
+
+bool loadLightTheme()
+{
+    return themeProperties().getBoolValue ("lightTheme", true);
+}
+
+void saveLightTheme (bool light)
+{
+    auto& properties = themeProperties();
+    properties.setValue ("lightTheme", light);
+    properties.saveIfNeeded();
+}
 
 juce::Colour foregroundOf (const juce::Component& component)
 {
@@ -196,6 +225,58 @@ private:
     bool current = false;
     DistortionEngine::Visualization visualization;
 };
+
+class FixedWidthMenuItem final : public juce::PopupMenu::CustomComponent
+{
+public:
+    FixedWidthMenuItem (juce::String itemText,
+                        int itemWidth,
+                        int itemHeight,
+                        bool selectedItem)
+        : juce::PopupMenu::CustomComponent (true),
+          text (std::move (itemText)),
+          width (itemWidth),
+          height (itemHeight),
+          selected (selectedItem)
+    {
+    }
+
+    void getIdealSize (int& idealWidth, int& idealHeight) override
+    {
+        idealWidth = width;
+        idealHeight = height;
+    }
+
+    void paint (juce::Graphics& graphics) override
+    {
+        const auto highlighted = isItemHighlighted();
+        const auto foreground = foregroundOf (*this);
+        const auto background = backgroundOf (*this);
+        graphics.fillAll (highlighted ? foreground : background);
+        graphics.setColour (highlighted ? background : foreground);
+        graphics.setFont (monoFont (10.0f * scaleOf (*this), true));
+        graphics.drawFittedText (
+            text,
+            getLocalBounds().reduced (8, 1),
+            juce::Justification::centred,
+            1);
+        if (selected)
+        {
+            const auto size = juce::jmax (3, juce::roundToInt (4.0f * scaleOf (*this)));
+            graphics.fillRect (
+                juce::Rectangle<int> { juce::roundToInt (4.0f * scaleOf (*this)),
+                                       (getHeight() - size) / 2,
+                                       size,
+                                       size });
+        }
+    }
+
+private:
+    juce::String text;
+    int width = 0;
+    int height = 0;
+    bool selected = false;
+};
 } // namespace
 
 GeometricLookAndFeel::GeometricLookAndFeel()
@@ -221,6 +302,7 @@ void GeometricLookAndFeel::applyPalette()
     const auto foreground = inverted ? darkPalette : lightPalette;
     const auto background = inverted ? lightPalette : darkPalette;
     const auto muted = foreground.interpolatedWith (background, 0.28f);
+    const auto knobShade = background.interpolatedWith (foreground, 0.12f);
 
     setColour (foregroundColourId, foreground);
     setColour (backgroundColourId, background);
@@ -233,7 +315,7 @@ void GeometricLookAndFeel::applyPalette()
     setColour (juce::ComboBox::textColourId, foreground);
     setColour (juce::ComboBox::outlineColourId, foreground);
     setColour (juce::ComboBox::arrowColourId, foreground);
-    setColour (juce::PopupMenu::backgroundColourId, background);
+    setColour (juce::PopupMenu::backgroundColourId, knobShade);
     setColour (juce::PopupMenu::textColourId, foreground);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, foreground);
     setColour (juce::PopupMenu::highlightedTextColourId, background);
@@ -374,16 +456,37 @@ void GeometricLookAndFeel::drawButtonBackground (
     const auto active = button.getToggleState();
     const auto foreground = findColour (foregroundColourId);
     const auto background = findColour (backgroundColourId);
-    graphics.setColour (active || isDown ? foreground : background);
-    graphics.fillRect (button.getLocalBounds());
-    graphics.setColour (active || isDown ? background : foreground);
-    graphics.drawRect (
-        button.getLocalBounds(),
-        juce::jmax (
-            1,
-            juce::roundToInt (
-                static_cast<float> (isHighlighted ? 3 : 2)
-                * uiScale)));
+    const auto bounds = button.getLocalBounds();
+    const auto border = juce::jmax (
+        1, juce::roundToInt (2.0f * uiScale));
+    const auto content = bounds.reduced (border);
+
+    graphics.setColour (foreground);
+    graphics.fillRect (bounds);
+    graphics.setColour (background);
+    graphics.fillRect (content);
+
+    if (active || isDown)
+    {
+        const auto activeFrame = juce::jmax (
+            1, juce::roundToInt (2.0f * uiScale));
+        graphics.setColour (foreground);
+        graphics.fillRect (content.reduced (activeFrame));
+    }
+
+    if (isHighlighted)
+    {
+        const auto highlightInset = juce::jmax (
+            2, juce::roundToInt (4.0f * uiScale));
+        const auto highlight = content.reduced (highlightInset);
+        if (! highlight.isEmpty())
+        {
+            graphics.setColour (active || isDown ? background : foreground);
+            graphics.drawRect (
+                highlight,
+                juce::jmax (1, juce::roundToInt (1.0f * uiScale)));
+        }
+    }
 }
 
 void GeometricLookAndFeel::drawButtonText (
@@ -434,6 +537,16 @@ void BrandButton::paintButton (
         1);
 }
 
+void ResettableSlider::mouseDown (const juce::MouseEvent& event)
+{
+    if (event.mods.isPopupMenu() && isDoubleClickReturnEnabled())
+    {
+        juce::Slider::mouseDoubleClick (event);
+        return;
+    }
+    juce::Slider::mouseDown (event);
+}
+
 ParameterControl::ParameterControl (juce::String title)
 {
     titleLabel.setText (std::move (title), juce::dontSendNotification);
@@ -443,6 +556,26 @@ ParameterControl::ParameterControl (juce::String title)
     slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     addAndMakeVisible (slider);
     setUiScale (1.0f);
+}
+
+void ParameterControl::applyPaletteColours()
+{
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    titleLabel.setColour (juce::Label::textColourId, foreground);
+    slider.setColour (juce::Slider::textBoxTextColourId, foreground);
+    slider.setColour (juce::Slider::textBoxBackgroundColourId, background);
+    slider.setColour (
+        juce::Slider::textBoxOutlineColourId,
+        juce::Colours::transparentBlack);
+    slider.updateText();
+    repaint();
+}
+
+void ParameterControl::lookAndFeelChanged()
+{
+    juce::Component::lookAndFeelChanged();
+    applyPaletteColours();
 }
 
 void ParameterControl::setTitle (const juce::String& title)
@@ -459,6 +592,7 @@ void ParameterControl::setUiScale (float newScale)
         false,
         juce::roundToInt (86.0f * uiScale),
         juce::roundToInt (19.0f * uiScale));
+    applyPaletteColours();
     resized();
     repaint();
 }
@@ -714,50 +848,83 @@ ResponseDisplay::~ResponseDisplay()
     stopTimer();
 }
 
-void TrimSlider::paint (juce::Graphics& graphics)
+BandTrimControl::BandTrimControl()
 {
-    const auto scale = scaleOf (*this);
-    auto track = getLocalBounds().toFloat();
-    track.removeFromRight (
-        static_cast<float> (getTextBoxWidth()) + 7.0f * scale);
-    track = track.reduced (7.0f * scale, 0.0f);
+    setName ("Band Trim");
+    setTitle ("Band Trim");
+    setSliderStyle (juce::Slider::LinearVertical);
+    setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    setRange (-12.0, 12.0, 0.01);
+    setMouseDragSensitivity (180);
+    setSliderSnapsToMousePosition (false);
 
-    const auto toolbarColour = foregroundOf (*this);
-    const auto darkToolbar = toolbarColour.getPerceivedBrightness() < 0.5f;
-    const auto trackColour = darkToolbar
-        ? juce::Colour (0xffaaaaaa)
-        : juce::Colour (0xff777777);
-    const auto centreY = track.getCentreY();
-    graphics.setColour (trackColour);
-    graphics.fillRect (juce::Rectangle<float> {
-        track.getX(), centreY - 1.0f * scale,
-        track.getWidth(), 2.0f * scale });
-
-    const auto range = getMaximum() - getMinimum();
-    const auto amount = range > 0.0
-        ? static_cast<float> ((getValue() - getMinimum()) / range)
-        : 0.5f;
-    const auto markerSize = 9.0f * scale;
-    const auto markerX = track.getX()
-        + juce::jlimit (0.0f, 1.0f, amount) * track.getWidth();
-    graphics.setColour (trackColour.brighter (darkToolbar ? 0.08f : 0.0f));
-    graphics.fillRect (juce::Rectangle<float> {
-        markerX - 0.5f * markerSize,
-        centreY - 0.5f * markerSize,
-        markerSize,
-        markerSize });
+    valueLabel.setJustificationType (juce::Justification::centred);
+    valueLabel.setEditable (false, true, false);
+    valueLabel.setInterceptsMouseClicks (false, false);
+    valueLabel.onTextChange = [this]
+    {
+        if (updatingText)
+            return;
+        auto text = valueLabel.getText().trim();
+        text = text.upToFirstOccurrenceOf ("dB", false, true).trim();
+        const auto parsed = getNormalisableRange().snapToLegalValue (
+            juce::jlimit (getMinimum(), getMaximum(), text.getDoubleValue()));
+        setValue (parsed, juce::sendNotificationSync);
+        updateValueText();
+    };
+    addAndMakeVisible (valueLabel);
+    onValueChange = [this] { updateValueText(); };
+    updateValueText();
 }
 
-void TrimSlider::lookAndFeelChanged()
+void BandTrimControl::updateValueText()
+{
+    const auto clean = std::abs (getValue()) < 0.005 ? 0.0 : getValue();
+    juce::ScopedValueSetter<bool> guard (updatingText, true);
+    valueLabel.setText (
+        juce::String (clean, 2) + " dB",
+        juce::dontSendNotification);
+}
+
+void BandTrimControl::paint (juce::Graphics& graphics)
+{
+    const auto scale = scaleOf (*this);
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    graphics.setColour (background);
+    graphics.fillRect (getLocalBounds());
+    graphics.setColour (foreground);
+    graphics.drawRect (
+        getLocalBounds(),
+        juce::jmax (1, juce::roundToInt (2.0f * scale)));
+}
+
+void BandTrimControl::resized()
+{
+    valueLabel.setBounds (getLocalBounds().reduced (
+        juce::jmax (2, juce::roundToInt (2.0f * scaleOf (*this)))));
+}
+
+void BandTrimControl::mouseDoubleClick (const juce::MouseEvent&)
+{
+    valueLabel.showEditor();
+    if (auto* editor = valueLabel.getCurrentTextEditor())
+        editor->selectAll();
+}
+
+void BandTrimControl::lookAndFeelChanged()
 {
     juce::Slider::lookAndFeelChanged();
-    setColour (juce::Slider::textBoxTextColourId, backgroundOf (*this));
-    setColour (
-        juce::Slider::textBoxBackgroundColourId,
+    valueLabel.setColour (juce::Label::textColourId, foregroundOf (*this));
+    valueLabel.setColour (
+        juce::Label::backgroundColourId,
         juce::Colours::transparentBlack);
-    setColour (
-        juce::Slider::textBoxOutlineColourId,
+    valueLabel.setColour (
+        juce::Label::outlineColourId,
         juce::Colours::transparentBlack);
+    valueLabel.setFont (monoFont (12.0f * scaleOf (*this), true));
+    updateValueText();
+    repaint();
 }
 
 MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
@@ -770,16 +937,7 @@ MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
              &soloButton, &bypassButton })
         addAndMakeVisible (*button);
 
-    trimSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    trimSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 68, 24);
-    trimSlider.setRange (-12.0, 12.0, 0.01);
-    trimSlider.setDoubleClickReturnValue (true, 0.0);
-    trimSlider.textFromValueFunction = [] (double value)
-    {
-        const auto clean = std::abs (value) < 0.005 ? 0.0 : value;
-        return juce::String (clean, 1) + " dB";
-    };
-    addAndMakeVisible (trimSlider);
+    addAndMakeVisible (trimControl);
 
     linkButton.onClick = [this]
     {
@@ -809,13 +967,7 @@ MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
             ParamIDs::band (selected, "Bypass"),
             multiband.bands[static_cast<size_t> (selected)].bypass ? 0.0f : 1.0f);
     };
-    trimSlider.onValueChange = [this]
-    {
-        setParameter (
-            ParamIDs::band (processor.getSelectedBand(), "Trim"),
-            static_cast<float> (trimSlider.getValue()));
-    };
-
+    bindTrimControl (processor.getSelectedBand());
     setMouseCursor (juce::MouseCursor::NormalCursor);
     startTimerHz (30);
 }
@@ -823,6 +975,8 @@ MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
 MultibandPanel::~MultibandPanel()
 {
     stopTimer();
+    endTrimDrag();
+    trimAttachment.reset();
     processor.setSoloBand (-1);
 }
 
@@ -839,8 +993,10 @@ void MultibandPanel::setParameter (const juce::String& id, float plainValue)
 
 juce::Rectangle<float> MultibandPanel::analyzerBounds() const
 {
-    auto bounds = getLocalBounds().toFloat().reduced (10.0f * scaleOf (*this));
-    bounds.removeFromBottom (42.0f * scaleOf (*this));
+    const auto margin = juce::roundToInt (10.0f * scaleOf (*this));
+    auto bounds = getLocalBounds().reduced (margin).toFloat();
+    bounds.removeFromBottom (
+        static_cast<float> (juce::roundToInt (42.0f * scaleOf (*this))));
     return bounds;
 }
 
@@ -864,6 +1020,21 @@ float MultibandPanel::xToFrequency (float x) const
     return 20.0f * std::pow (maximum / 20.0f, normalised);
 }
 
+juce::Rectangle<float> MultibandPanel::slopeBadgeBounds (int crossover) const
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    if (crossover < 0 || crossover >= parameters.bandCount - 1)
+        return {};
+    const auto scale = scaleOf (*this);
+    const auto x = frequencyToX (
+        parameters.crossoverHz[static_cast<size_t> (crossover)]);
+    const auto width = 76.0f * scale;
+    return { x - 0.5f * width,
+             analyzerBounds().getBottom() - 32.0f * scale,
+             width,
+             23.0f * scale };
+}
+
 int MultibandPanel::crossoverAt (juce::Point<float> position,
                                  bool badgeOnly) const
 {
@@ -874,14 +1045,20 @@ int MultibandPanel::crossoverAt (juce::Point<float> position,
         const auto x = frequencyToX (
             parameters.crossoverHz[static_cast<size_t> (crossover)]);
         const auto hit = badgeOnly
-            ? juce::Rectangle<float> {
-                x - 38.0f, bounds.getBottom() - 32.0f, 76.0f, 23.0f }
+            ? slopeBadgeBounds (crossover)
             : juce::Rectangle<float> {
-                x - 8.0f, bounds.getY(), 16.0f, bounds.getHeight() };
+                x - 8.0f * scaleOf (*this), bounds.getY(),
+                16.0f * scaleOf (*this), bounds.getHeight() };
         if (hit.contains (position))
             return crossover;
     }
     return -1;
+}
+
+int MultibandPanel::crossoverForResetAt (juce::Point<float> position) const
+{
+    const auto line = crossoverAt (position, false);
+    return line >= 0 ? line : crossoverAt (position, true);
 }
 
 int MultibandPanel::bandAt (float x) const
@@ -894,19 +1071,151 @@ int MultibandPanel::bandAt (float x) const
     return parameters.bandCount - 1;
 }
 
+juce::Rectangle<float> MultibandPanel::bandBounds (int band) const
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    const auto bounds = analyzerBounds();
+    if (band < 0 || band >= parameters.bandCount)
+        return {};
+    const auto left = band == 0
+        ? bounds.getX()
+        : frequencyToX (
+            parameters.crossoverHz[static_cast<size_t> (band - 1)]);
+    const auto right = band == parameters.bandCount - 1
+        ? bounds.getRight()
+        : frequencyToX (
+            parameters.crossoverHz[static_cast<size_t> (band)]);
+    return { left, bounds.getY(), right - left, bounds.getHeight() };
+}
+
+float MultibandPanel::trimToY (float trimDb) const
+{
+    const auto bounds = analyzerBounds();
+    const auto normalised = juce::jmap (
+        juce::jlimit (-12.0f, 12.0f, trimDb), -12.0f, 12.0f, 0.0f, 1.0f);
+    return bounds.getBottom() - normalised * bounds.getHeight();
+}
+
+float MultibandPanel::yToTrim (float y) const
+{
+    const auto bounds = analyzerBounds();
+    const auto normalised = juce::jlimit (
+        0.0f, 1.0f, (bounds.getBottom() - y) / bounds.getHeight());
+    return juce::jmap (normalised, 0.0f, 1.0f, -12.0f, 12.0f);
+}
+
+int MultibandPanel::trimAt (juce::Point<float> position) const
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    const auto tolerance = 9.0f * scaleOf (*this);
+    for (int band = 0; band < parameters.bandCount; ++band)
+    {
+        const auto bounds = bandBounds (band);
+        const auto trimY = trimToY (
+            parameters.bands[static_cast<size_t> (band)].trimDb);
+        if (position.x >= bounds.getX() + 3.0f * scaleOf (*this)
+            && position.x <= bounds.getRight() - 3.0f * scaleOf (*this)
+            && std::abs (position.y - trimY) <= tolerance)
+            return band;
+    }
+    return -1;
+}
+
+void MultibandPanel::resetTrim (int band)
+{
+    if (band < 0)
+        return;
+    processor.setSelectedBand (band);
+    bindTrimControl (band);
+    setParameter (ParamIDs::band (band, "Trim"), 0.0f);
+    repaint();
+}
+
+void MultibandPanel::resetCrossover (int crossover)
+{
+    if (crossover < 0
+        || crossover >= MultibandParameters::maximumCrossovers)
+        return;
+    setParameter (
+        ParamIDs::crossoverFrequency (crossover),
+        defaultCrossoverFrequencies[static_cast<size_t> (crossover)]);
+    repaint();
+}
+
+void MultibandPanel::bindTrimControl (int band)
+{
+    const auto parameters = processor.getCurrentMultibandParameters();
+    band = juce::jlimit (0, parameters.bandCount - 1, band);
+    if (band == trimBoundBand && trimAttachment != nullptr)
+        return;
+    trimAttachment.reset();
+    trimBoundBand = band;
+    trimAttachment = std::make_unique<
+        juce::AudioProcessorValueTreeState::SliderAttachment> (
+            processor.parameters,
+            ParamIDs::band (band, "Trim"),
+            trimControl);
+}
+
+void MultibandPanel::beginTrimDrag (int band, float y)
+{
+    endTrimDrag();
+    processor.setSelectedBand (band);
+    bindTrimControl (band);
+    draggedTrimBand = band;
+    draggedTrimParameter = processor.parameters.getParameter (
+        ParamIDs::band (band, "Trim"));
+    if (draggedTrimParameter != nullptr)
+        draggedTrimParameter->beginChangeGesture();
+    updateTrimDrag (y);
+}
+
+void MultibandPanel::updateTrimDrag (float y)
+{
+    if (draggedTrimBand < 0 || draggedTrimParameter == nullptr)
+        return;
+    const auto plainValue = draggedTrimParameter->getNormalisableRange()
+        .snapToLegalValue (yToTrim (y));
+    draggedTrimParameter->setValueNotifyingHost (
+        draggedTrimParameter->convertTo0to1 (plainValue));
+    trimControl.setValue (plainValue, juce::dontSendNotification);
+    repaint();
+}
+
+void MultibandPanel::endTrimDrag()
+{
+    if (draggedTrimParameter != nullptr)
+        draggedTrimParameter->endChangeGesture();
+    draggedTrimParameter = nullptr;
+    draggedTrimBand = -1;
+}
+
 void MultibandPanel::showBandCountMenu()
 {
     juce::PopupMenu menu;
+    menu.setLookAndFeel (&getLookAndFeel());
     const auto selected = processor.getCurrentMultibandParameters().bandCount;
+    const auto target = bandCountButton.getScreenBounds();
+    const auto border = getLookAndFeel().getPopupMenuBorderSize();
+    const auto itemWidth = juce::jmax (1, target.getWidth() - 2 * border);
+    const auto itemHeight = juce::jmax (
+        20, juce::roundToInt (28.0f * scaleOf (*this)));
     for (int count = 2; count <= 4; ++count)
-        menu.addItem (
+        menu.addCustomItem (
             count,
-            juce::String (count) + " BANDS",
-            true,
-            count == selected);
+            std::make_unique<FixedWidthMenuItem> (
+                juce::String (count) + " BANDS",
+                itemWidth,
+                itemHeight,
+                count == selected),
+            nullptr,
+            juce::String (count) + " BANDS");
     const auto safeThis = juce::Component::SafePointer<MultibandPanel> (this);
     menu.showMenuAsync (
-        juce::PopupMenu::Options {}.withTargetComponent (&bandCountButton),
+        juce::PopupMenu::Options {}
+            .withTargetComponent (&bandCountButton)
+            .withTargetScreenArea (target)
+            .withMinimumWidth (target.getWidth()),
         [safeThis] (int result)
         {
             if (safeThis != nullptr && result >= 2 && result <= 4)
@@ -919,26 +1228,31 @@ void MultibandPanel::showBandCountMenu()
 void MultibandPanel::showSlopeMenu (int crossover)
 {
     juce::PopupMenu menu;
+    menu.setLookAndFeel (&getLookAndFeel());
     constexpr std::array<int, 5> slopes { 6, 12, 24, 36, 48 };
     const auto selected = processor.getCurrentMultibandParameters()
         .crossoverSlope[static_cast<size_t> (crossover)];
+    const auto target = localAreaToGlobal (
+        slopeBadgeBounds (crossover).toNearestInt());
+    const auto border = getLookAndFeel().getPopupMenuBorderSize();
+    const auto itemWidth = juce::jmax (1, target.getWidth() - 2 * border);
+    const auto itemHeight = juce::jmax (
+        20, juce::roundToInt (23.0f * scaleOf (*this)));
     for (int index = 0; index < static_cast<int> (slopes.size()); ++index)
-        menu.addItem (
+        menu.addCustomItem (
             index + 1,
-            juce::String (slopes[static_cast<size_t> (index)]) + " dB/oct",
-            true,
-            index == selected);
+            std::make_unique<FixedWidthMenuItem> (
+                juce::String (slopes[static_cast<size_t> (index)]) + " dB/oct",
+                itemWidth,
+                itemHeight,
+                index == selected),
+            nullptr,
+            juce::String (slopes[static_cast<size_t> (index)]) + " dB/oct");
     const auto safeThis = juce::Component::SafePointer<MultibandPanel> (this);
     menu.showMenuAsync (
         juce::PopupMenu::Options {}
-            .withTargetScreenArea (
-                localAreaToGlobal (
-                    juce::Rectangle<int> (
-                        juce::roundToInt (frequencyToX (
-                            processor.getCurrentMultibandParameters()
-                                .crossoverHz[static_cast<size_t> (crossover)])) - 38,
-                        juce::roundToInt (analyzerBounds().getBottom() - 32),
-                        76, 23))),
+            .withTargetScreenArea (target)
+            .withMinimumWidth (target.getWidth()),
         [safeThis, crossover] (int result)
         {
             if (safeThis != nullptr && result > 0)
@@ -1021,9 +1335,8 @@ void MultibandPanel::updateControls()
     bypassButton.setToggleState (
         parameters.bands[static_cast<size_t> (selected)].bypass,
         juce::dontSendNotification);
-    const auto trim = parameters.bands[static_cast<size_t> (selected)].trimDb;
-    if (! trimSlider.isMouseButtonDown())
-        trimSlider.setValue (trim, juce::dontSendNotification);
+    if (draggedTrimBand < 0)
+        bindTrimControl (selected);
 }
 
 void MultibandPanel::paint (juce::Graphics& graphics)
@@ -1035,8 +1348,6 @@ void MultibandPanel::paint (juce::Graphics& graphics)
     const auto bounds = analyzerBounds();
     graphics.setColour (background);
     graphics.fillRect (bounds);
-    graphics.setColour (foreground);
-    graphics.drawRect (bounds, 2.0f * scaleOf (*this));
 
     const auto parameters = processor.getCurrentMultibandParameters();
     const auto selected = processor.getSelectedBand();
@@ -1116,6 +1427,40 @@ void MultibandPanel::paint (juce::Graphics& graphics)
         makePath (outputSpectrum),
         juce::PathStrokeType (2.0f * scaleOf (*this)));
 
+    const auto neutralY = trimToY (0.0f);
+    graphics.setColour (foreground.withAlpha (0.24f));
+    const auto dashLength = 5.0f * scaleOf (*this);
+    for (auto x = bounds.getX(); x < bounds.getRight(); x += 2.0f * dashLength)
+        graphics.fillRect (juce::Rectangle<float> {
+            x, neutralY - 0.5f * scaleOf (*this),
+            juce::jmin (dashLength, bounds.getRight() - x),
+            1.0f * scaleOf (*this) });
+
+    for (int band = 0; band < parameters.bandCount; ++band)
+    {
+        auto bandArea = bandBounds (band);
+        const auto trimY = trimToY (
+            parameters.bands[static_cast<size_t> (band)].trimDb);
+        const auto active = band == selected
+            || band == hoveredTrimBand
+            || band == draggedTrimBand;
+        const auto inset = 5.0f * scaleOf (*this);
+        const auto thickness = (active ? 4.0f : 2.5f) * scaleOf (*this);
+        const auto line = juce::Rectangle<float> {
+            bandArea.getX() + inset,
+            trimY - 0.5f * thickness,
+            juce::jmax (0.0f, bandArea.getWidth() - 2.0f * inset),
+            thickness };
+        graphics.setColour (foreground.withAlpha (active ? 0.98f : 0.70f));
+        graphics.fillRect (line);
+        const auto handle = (active ? 8.0f : 6.0f) * scaleOf (*this);
+        graphics.fillRect (juce::Rectangle<float> {
+            bandArea.getCentreX() - 0.5f * handle,
+            trimY - 0.5f * handle,
+            handle,
+            handle });
+    }
+
     constexpr std::array<int, 5> slopes { 6, 12, 24, 36, 48 };
     for (int crossover = 0; crossover < parameters.bandCount - 1; ++crossover)
     {
@@ -1125,10 +1470,13 @@ void MultibandPanel::paint (juce::Graphics& graphics)
         graphics.fillRect (x - 1.0f, bounds.getY(), 2.0f, bounds.getHeight());
         if (hoveredCrossover == crossover || draggedCrossover == crossover)
         {
+            const auto badgeWidth = 76.0f * scaleOf (*this);
             const auto frequencyBadge = juce::Rectangle<float> {
-                x - 38.0f, bounds.getY() + 9.0f, 76.0f, 23.0f };
-            const auto slopeBadge = juce::Rectangle<float> {
-                x - 38.0f, bounds.getBottom() - 32.0f, 76.0f, 23.0f };
+                x - 0.5f * badgeWidth,
+                bounds.getY() + 9.0f * scaleOf (*this),
+                badgeWidth,
+                23.0f * scaleOf (*this) };
+            const auto slopeBadge = slopeBadgeBounds (crossover);
             graphics.setColour (foreground);
             graphics.fillRect (frequencyBadge);
             graphics.fillRect (slopeBadge);
@@ -1150,14 +1498,24 @@ void MultibandPanel::paint (juce::Graphics& graphics)
                 juce::Justification::centred);
         }
     }
+
+    graphics.setColour (foreground);
+    graphics.drawRect (
+        bounds.toNearestInt(),
+        juce::jmax (1, juce::roundToInt (2.0f * scaleOf (*this))));
 }
 
 void MultibandPanel::resized()
 {
-    auto toolbar = getLocalBounds().reduced (
-        juce::roundToInt (10.0f * scaleOf (*this)));
-    toolbar = toolbar.removeFromBottom (
-        juce::roundToInt (34.0f * scaleOf (*this)));
+    const auto analyzer = analyzerBounds().toNearestInt();
+    const auto margin = juce::roundToInt (10.0f * scaleOf (*this));
+    const auto toolbarHeight = juce::roundToInt (34.0f * scaleOf (*this));
+    auto toolbar = juce::Rectangle<int> {
+        analyzer.getX(),
+        getHeight() - margin - toolbarHeight,
+        analyzer.getWidth(),
+        toolbarHeight
+    };
     const auto gap = juce::roundToInt (5.0f * scaleOf (*this));
     linkButton.setBounds (toolbar.removeFromLeft (90).reduced (0, 1));
     toolbar.removeFromLeft (gap);
@@ -1169,15 +1527,19 @@ void MultibandPanel::resized()
     toolbar.removeFromLeft (gap);
     bypassButton.setBounds (toolbar.removeFromLeft (85).reduced (0, 1));
     toolbar.removeFromLeft (gap);
-    trimSlider.setBounds (toolbar);
+    trimControl.setBounds (toolbar.removeFromRight (105).reduced (0, 1));
 }
 
 void MultibandPanel::mouseMove (const juce::MouseEvent& event)
 {
     hoveredCrossover = crossoverAt (event.position, false);
-    setMouseCursor (hoveredCrossover >= 0
-        ? juce::MouseCursor::LeftRightResizeCursor
-        : juce::MouseCursor::NormalCursor);
+    hoveredTrimBand = hoveredCrossover < 0 ? trimAt (event.position) : -1;
+    setMouseCursor (
+        hoveredCrossover >= 0
+            ? juce::MouseCursor::LeftRightResizeCursor
+            : (hoveredTrimBand >= 0
+                ? juce::MouseCursor::UpDownResizeCursor
+                : juce::MouseCursor::NormalCursor));
     repaint();
 }
 
@@ -1185,11 +1547,22 @@ void MultibandPanel::mouseExit (const juce::MouseEvent&)
 {
     if (draggedCrossover < 0)
         hoveredCrossover = -1;
+    if (draggedTrimBand < 0)
+        hoveredTrimBand = -1;
     repaint();
 }
 
 void MultibandPanel::mouseDown (const juce::MouseEvent& event)
 {
+    if (event.mods.isPopupMenu())
+    {
+        const auto crossover = crossoverForResetAt (event.position);
+        if (crossover >= 0)
+            resetCrossover (crossover);
+        else
+            resetTrim (trimAt (event.position));
+        return;
+    }
     const auto badge = crossoverAt (event.position, true);
     if (badge >= 0 && badge == hoveredCrossover)
     {
@@ -1197,12 +1570,38 @@ void MultibandPanel::mouseDown (const juce::MouseEvent& event)
         return;
     }
     draggedCrossover = crossoverAt (event.position, false);
-    if (draggedCrossover < 0 && analyzerBounds().contains (event.position))
-        processor.setSelectedBand (bandAt (event.position.x));
+    if (draggedCrossover >= 0)
+        return;
+    const auto trimBand = trimAt (event.position);
+    if (trimBand >= 0)
+    {
+        beginTrimDrag (trimBand, event.position.y);
+        return;
+    }
+    if (analyzerBounds().contains (event.position))
+    {
+        const auto band = bandAt (event.position.x);
+        processor.setSelectedBand (band);
+        bindTrimControl (band);
+    }
+}
+
+void MultibandPanel::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    const auto crossover = crossoverForResetAt (event.position);
+    if (crossover >= 0)
+        resetCrossover (crossover);
+    else
+        resetTrim (trimAt (event.position));
 }
 
 void MultibandPanel::mouseDrag (const juce::MouseEvent& event)
 {
+    if (draggedTrimBand >= 0)
+    {
+        updateTrimDrag (event.position.y);
+        return;
+    }
     if (draggedCrossover < 0)
         return;
     auto frequency = xToFrequency (event.position.x);
@@ -1225,6 +1624,7 @@ void MultibandPanel::mouseDrag (const juce::MouseEvent& event)
 void MultibandPanel::mouseUp (const juce::MouseEvent&)
 {
     draggedCrossover = -1;
+    endTrimDrag();
 }
 
 void ResponseDisplay::timerCallback()
@@ -1345,6 +1745,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
       multibandPanel (owner)
 {
     ownerProcessor.setAnalyzerEnabled (true);
+    lookAndFeel.setInverted (loadLightTheme());
     setLookAndFeel (&lookAndFeel);
     setOpaque (true);
     setResizable (true, true);
@@ -1374,6 +1775,14 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     autoGainButton.setClickingTogglesState (false);
     autoGainButton.onClick = [this] { cycleAutoGain(); };
     addAndMakeVisible (autoGainButton);
+    pluginPowerButton.setClickingTogglesState (true);
+    pluginPowerButton.setWantsKeyboardFocus (false);
+    pluginPowerButton.onStateChange = [this]
+    {
+        pluginPowerButton.setButtonText (
+            pluginPowerButton.getToggleState() ? "ON" : "OFF");
+    };
+    addAndMakeVisible (pluginPowerButton);
     addAndMakeVisible (asymStereoButton);
     addAndMakeVisible (secondarySlider);
 
@@ -1450,6 +1859,10 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
         state, ParamIDs::quality, quality.slider);
     multibandAttachment = std::make_unique<ButtonAttachment> (
         state, ParamIDs::multibandEnabled, multibandButton);
+    pluginPowerAttachment = std::make_unique<ButtonAttachment> (
+        state, ParamIDs::pluginEnabled, pluginPowerButton);
+    pluginPowerButton.setButtonText (
+        pluginPowerButton.getToggleState() ? "ON" : "OFF");
     if (auto* parameter = state.getParameter (ParamIDs::autoGain))
     {
         autoGainAttachment = std::make_unique<juce::ParameterAttachment> (
@@ -1507,6 +1920,11 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     installGroupDrag (mix.slider, "Mix");
     rebindContextualControls();
     timerCallback();
+    sendLookAndFeelChange();
+    for (auto* control : {
+             &drive, &character, &asym, &tone,
+             &stages, &mix, &output, &quality })
+        control->applyPaletteColours();
     startTimerHz (12);
 }
 
@@ -1876,6 +2294,7 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
 void DefaultDistortionAudioProcessorEditor::togglePalette()
 {
     lookAndFeel.setInverted (! lookAndFeel.isInverted());
+    saveLightTheme (lookAndFeel.isInverted());
     sendLookAndFeelChange();
     repaint();
 }
@@ -1975,8 +2394,8 @@ void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
     graphics.fillRect (rect (10, 74, 520, 270));
     graphics.fillRect (rect (540, 74, 310, 270));
     graphics.setColour (foreground);
-    graphics.fillRect (rect (258, 0, 26, 24));
-    graphics.fillRect (rect (258, 40, 26, 24));
+    graphics.fillRect (rect (220, 0, 24, 24));
+    graphics.fillRect (rect (220, 40, 24, 24));
 }
 
 void DefaultDistortionAudioProcessorEditor::resized()
@@ -2005,11 +2424,12 @@ void DefaultDistortionAudioProcessorEditor::resized()
             juce::roundToInt (static_cast<float> (height) * scale));
     };
 
-    brandLabel.setBounds (scaled (0, 0, 258, 64));
-    previousModeButton.setBounds (scaled (294, 12, 32, 40));
-    modeButton.setBounds (scaled (330, 12, 314, 40));
-    nextModeButton.setBounds (scaled (648, 12, 32, 40));
-    autoGainButton.setBounds (scaled (692, 12, 156, 40));
+    brandLabel.setBounds (scaled (0, 0, 220, 64));
+    previousModeButton.setBounds (scaled (252, 12, 30, 40));
+    modeButton.setBounds (scaled (286, 12, 266, 40));
+    nextModeButton.setBounds (scaled (556, 12, 30, 40));
+    autoGainButton.setBounds (scaled (596, 12, 156, 40));
+    pluginPowerButton.setBounds (scaled (762, 12, 86, 40));
 
     constexpr int controlWidth = 126;
     constexpr int controlHeight = 128;

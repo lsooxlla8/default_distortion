@@ -463,7 +463,7 @@ struct LinearPhaseBank : private juce::Thread
     std::array<std::vector<float>, maximumChannels> delayBuffers;
     std::array<int, maximumChannels> delayPositions {};
     std::array<float, maximumCrossovers> lastFrequencies {
-        120.0f, 1000.0f, 5000.0f
+        100.0f, 500.0f, 2000.0f
     };
     std::array<int, maximumCrossovers> lastSlopes { 2, 2, 2 };
     std::array<std::atomic<float>, maximumCrossovers> requestedFrequencies;

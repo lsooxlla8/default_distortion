@@ -1,6 +1,6 @@
 # default_distortion
 
-![default_distortion plug-in interface](docs/default_distortion-multiband.png)
+![default_distortion plug-in interface](docs/default_distortion-multiband-v2.png)
 
 **default_distortion** is designed to be your ultimate go-to plugin whenever
 you need to clip, saturate, distort, or completely degrade your audio signal.
