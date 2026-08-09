@@ -10,8 +10,10 @@ multiband mode, oversampling, and a sleek, modern UI. Despite its powerful
 capabilities, the plugin is heavily optimized for CPU efficiency.
 
 Take full control of your loudness with two distinct auto-gain modes:
+
 **Regular Auto Gain:** Automatically and independently compensates for volume
 changes (within each frequency band).
+
 **Smart Auto Gain:** Measures the LUFS difference of the complete, summed
 multiband signal, precisely matching the loudness right before the final
 Output stage.
