@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(default_distortion VERSION 0.7.0 LANGUAGES C CXX)
+project(default_distortion VERSION 0.8.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,7 @@ target_sources(DefaultDistortion
         Source/DistortionEngine.h
         Source/MultibandProcessor.cpp
         Source/MultibandProcessor.h
+        Source/GlobalBypass.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
         Source/SecondaryAutoGainTable.h
@@ -106,6 +107,7 @@ target_sources(DefaultDistortionTests
         Source/DistortionEngine.h
         Source/MultibandProcessor.cpp
         Source/MultibandProcessor.h
+        Source/GlobalBypass.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
         Source/SecondaryAutoGainTable.h

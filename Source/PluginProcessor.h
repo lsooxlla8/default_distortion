@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DistortionEngine.h"
+#include "GlobalBypass.h"
 #include "MultibandProcessor.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -83,6 +84,7 @@ private:
 
     DistortionEngine engine;
     MultibandProcessor multibandEngine;
+    GlobalBypass globalBypass;
     std::atomic<float> inputPeak { 0.0f };
     std::atomic<float> outputPeak { 0.0f };
     std::atomic<int> selectedBand { 0 };

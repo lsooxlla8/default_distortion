@@ -20,6 +20,7 @@ inline constexpr auto mix = "mix";
 inline constexpr auto output = "output";
 inline constexpr auto quality = "quality";
 inline constexpr auto autoGain = "autoGain";
+inline constexpr auto pluginEnabled = "pluginEnabled";
 inline constexpr auto multibandEnabled = "multibandEnabled";
 inline constexpr auto multibandLink = "multibandLink";
 inline constexpr auto multibandBandCount = "multibandBandCount";
@@ -71,10 +72,10 @@ struct MultibandParameters
 
     bool enabled = false;
     bool linked = true;
-    int bandCount = 2;
+    int bandCount = 4;
     int phaseMode = 0;
     std::array<float, maximumCrossovers> crossoverHz {
-        120.0f, 1000.0f, 5000.0f
+        100.0f, 500.0f, 2000.0f
     };
     std::array<int, maximumCrossovers> crossoverSlope {
         2, 2, 2

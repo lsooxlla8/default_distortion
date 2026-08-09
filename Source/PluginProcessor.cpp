@@ -7,7 +7,7 @@ namespace dd
 {
 namespace
 {
-constexpr int currentStateSchemaVersion = 4;
+constexpr int currentStateSchemaVersion = 5;
 constexpr auto stateSchemaProperty = "defaultDistortionStateSchema";
 constexpr std::array<const char*, 3> crossoverFrequencyIds {
     "crossover1Frequency", "crossover2Frequency", "crossover3Frequency"
@@ -117,6 +117,11 @@ void initialiseVersionFourParameters (juce::ValueTree& state)
         setStateParameterValue (
             state, ParamIDs::band (band, "Mix"), 1.0f);
     }
+}
+
+void initialiseVersionFiveParameters (juce::ValueTree& state)
+{
+    setStateParameterValue (state, ParamIDs::pluginEnabled, 1.0f);
 }
 } // namespace
 
@@ -268,6 +273,11 @@ DefaultDistortionAudioProcessor::createLayout()
         1));
 
     layout.add (std::make_unique<Bool> (
+        juce::ParameterID { ParamIDs::pluginEnabled, 1 },
+        "Plugin Enabled",
+        true));
+
+    layout.add (std::make_unique<Bool> (
         juce::ParameterID { ParamIDs::multibandEnabled, 1 },
         "Multiband Enabled",
         false));
@@ -280,7 +290,7 @@ DefaultDistortionAudioProcessor::createLayout()
         juce::ParameterID { ParamIDs::multibandBandCount, 1 },
         "Multiband Band Count",
         juce::StringArray { "2", "3", "4" },
-        0));
+        2));
     layout.add (std::make_unique<Choice> (
         juce::ParameterID { ParamIDs::multibandPhase, 1 },
         "Multiband Phase",
@@ -288,7 +298,7 @@ DefaultDistortionAudioProcessor::createLayout()
         0));
 
     constexpr std::array<float, MultibandParameters::maximumCrossovers>
-        defaultCrossovers { 120.0f, 1000.0f, 5000.0f };
+        defaultCrossovers { 100.0f, 500.0f, 2000.0f };
     for (int crossover = 0;
          crossover < MultibandParameters::maximumCrossovers;
          ++crossover)
@@ -404,13 +414,20 @@ void DefaultDistortionAudioProcessor::prepareToPlay (double newSampleRate,
     analyzerInputBuffer.setSize (
         juce::jmax (1, getTotalNumOutputChannels()),
         juce::jmax (1, samplesPerBlock), false, false, true);
-    const auto maximumAnalyzerLatency = juce::jmax (
+    const auto maximumProcessingLatency = juce::jmax (
         engine.getLatencySamples(), multibandEngine.getLatencySamples (true));
     analyzerInputDelayBuffer.setSize (
         juce::jmax (1, getTotalNumOutputChannels()),
-        maximumAnalyzerLatency + juce::jmax (1, samplesPerBlock) + 1,
+        maximumProcessingLatency + juce::jmax (1, samplesPerBlock) + 1,
         false, true, true);
     analyzerInputDelayPosition = 0;
+    globalBypass.prepare (
+        newSampleRate,
+        samplesPerBlock,
+        juce::jmax (1, getTotalNumOutputChannels()),
+        maximumProcessingLatency,
+        parameters.getRawParameterValue (ParamIDs::pluginEnabled)->load()
+            >= 0.5f);
     // Prime deterministic compensation on the host setup thread. Subsequent
     // edits use the pre-generated table directly in the audio callback; no
     // programme measurement or background recalibration is involved.
@@ -427,6 +444,9 @@ void DefaultDistortionAudioProcessor::releaseResources()
 {
     engine.reset();
     multibandEngine.reset();
+    globalBypass.reset (
+        parameters.getRawParameterValue (ParamIDs::pluginEnabled)->load()
+            >= 0.5f);
     analyzerInputDelayBuffer.clear();
     analyzerInputDelayPosition = 0;
 }
@@ -453,6 +473,8 @@ void DefaultDistortionAudioProcessor::processBlock (
          ++channel)
         buffer.clear (channel, 0, buffer.getNumSamples());
 
+    globalBypass.captureInput (buffer);
+
     const auto shouldAnalyze = analyzerEnabled.load (std::memory_order_relaxed);
     if (shouldAnalyze)
     {
@@ -463,14 +485,20 @@ void DefaultDistortionAudioProcessor::processBlock (
     inputPeak.store (calculatePeak (buffer), std::memory_order_relaxed);
     const auto master = getCurrentParameters();
     const auto multiband = getCurrentMultibandParameters();
-    if (multiband.enabled)
-        multibandEngine.process (
-            buffer,
-            master,
-            multiband,
-            soloBand.load (std::memory_order_relaxed));
-    else
-        engine.process (buffer, master);
+    const auto pluginEnabled =
+        parameters.getRawParameterValue (ParamIDs::pluginEnabled)->load()
+            >= 0.5f;
+    if (globalBypass.shouldProcessWet (pluginEnabled))
+    {
+        if (multiband.enabled)
+            multibandEngine.process (
+                buffer,
+                master,
+                multiband,
+                soloBand.load (std::memory_order_relaxed));
+        else
+            engine.process (buffer, master);
+    }
     const auto requiredLatency = multiband.enabled
         ? multibandEngine.getLatencySamples (multiband.phaseMode == 1)
         : engine.getLatencySamples();
@@ -479,6 +507,10 @@ void DefaultDistortionAudioProcessor::processBlock (
         reportedLatency.store (requiredLatency, std::memory_order_relaxed);
         setLatencySamples (requiredLatency);
     }
+    globalBypass.processOutput (
+        buffer,
+        requiredLatency,
+        pluginEnabled);
     outputPeak.store (calculatePeak (buffer), std::memory_order_relaxed);
     if (shouldAnalyze)
     {
@@ -828,7 +860,10 @@ void DefaultDistortionAudioProcessor::setStateInformation (
                     if (! found)
                         state.appendChild (defaultChild.createCopy(), nullptr);
                 }
-                initialiseVersionFourParameters (state);
+                if (schemaVersion < 4)
+                    initialiseVersionFourParameters (state);
+                if (schemaVersion < 5)
+                    initialiseVersionFiveParameters (state);
             }
 
             state.setProperty (

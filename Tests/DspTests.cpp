@@ -1,4 +1,5 @@
 #include "../Source/DistortionEngine.h"
+#include "../Source/GlobalBypass.h"
 #include "../Source/MultibandProcessor.h"
 
 #include <juce_core/juce_core.h>
@@ -53,6 +54,72 @@ void fillSignal (juce::AudioBuffer<float>& buffer, double& phase)
                 static_cast<float> (value * (channel == 0 ? 1.0 : 0.87)));
         phase += 1.0;
     }
+}
+
+void testNewDefaultsAndGlobalBypass (TestContext& context)
+{
+    const dd::MultibandParameters defaults;
+    context.expect (
+        defaults.bandCount == 4,
+        "New multiband instances do not default to four bands");
+    context.expect (
+        defaults.crossoverHz == std::array<float, 3> { 100.0f, 500.0f, 2000.0f },
+        "New multiband crossover defaults are incorrect");
+
+    constexpr int testBlockSize = 256;
+    dd::GlobalBypass bypass;
+    bypass.prepare (sampleRate, testBlockSize, 1, 64, true);
+    juce::AudioBuffer<float> input (1, testBlockSize);
+    juce::AudioBuffer<float> output (1, testBlockSize);
+    input.clear();
+    output.clear();
+    auto previous = 1.0f;
+    auto maximumStep = 0.0f;
+    for (int block = 0; block < 4; ++block)
+    {
+        input.clear();
+        output.clear();
+        for (int sample = 0; sample < testBlockSize; ++sample)
+        {
+            input.setSample (0, sample, -1.0f);
+            output.setSample (0, sample, 1.0f);
+        }
+        bypass.captureInput (input);
+        bypass.processOutput (output, 0, false);
+        for (int sample = 0; sample < testBlockSize; ++sample)
+        {
+            const auto value = output.getSample (0, sample);
+            maximumStep = juce::jmax (maximumStep, std::abs (value - previous));
+            previous = value;
+        }
+    }
+    context.expect (
+        maximumStep < 0.01f,
+        "Global bypass transition is not click-free");
+    context.expect (
+        std::abs (output.getSample (0, testBlockSize - 1) + 1.0f) < 1.0e-6f,
+        "Global OFF does not settle to the dry signal");
+    context.expect (
+        ! bypass.shouldProcessWet (false),
+        "Global OFF continues to request wet processing after its fade");
+
+    dd::GlobalBypass delayedBypass;
+    delayedBypass.prepare (sampleRate, 64, 1, 64, false);
+    juce::AudioBuffer<float> impulse (1, 64);
+    juce::AudioBuffer<float> silentEffect (1, 64);
+    impulse.clear();
+    silentEffect.clear();
+    impulse.setSample (0, 0, 1.0f);
+    delayedBypass.captureInput (impulse);
+    delayedBypass.processOutput (silentEffect, 32, false);
+    context.expect (
+        std::abs (silentEffect.getSample (0, 32) - 1.0f) < 1.0e-6f,
+        "Global OFF dry signal is not aligned to the reported latency");
+    for (int sample = 0; sample < 64; ++sample)
+        if (sample != 32)
+            context.expect (
+                std::abs (silentEffect.getSample (0, sample)) < 1.0e-6f,
+                "Global OFF latency path introduced an unexpected sample");
 }
 
 double measureMultibandReconstructionGain (double rate,
@@ -3373,6 +3440,7 @@ int main (int argc, char** argv)
     }
 
     TestContext context;
+    testNewDefaultsAndGlobalBypass (context);
     testModeMetadata (context);
     testMultibandCrossoversAndSmartGain (context);
     testCanonicalClipCeilings (context);

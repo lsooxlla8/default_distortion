@@ -72,6 +72,12 @@ public:
     void paintButton (juce::Graphics&, bool, bool) override;
 };
 
+class ResettableSlider : public juce::Slider
+{
+public:
+    void mouseDown (const juce::MouseEvent&) override;
+};
+
 class ParameterControl final : public juce::Component
 {
 public:
@@ -79,10 +85,12 @@ public:
 
     void setTitle (const juce::String&);
     void setUiScale (float newScale);
+    void applyPaletteColours();
     void resized() override;
     void paint (juce::Graphics&) override;
+    void lookAndFeelChanged() override;
 
-    juce::Slider slider;
+    ResettableSlider slider;
 
 private:
     juce::Label titleLabel;
@@ -118,7 +126,7 @@ public:
     void paintButton (juce::Graphics&, bool, bool) override;
 };
 
-class VerticalTextSlider final : public juce::Slider
+class VerticalTextSlider final : public ResettableSlider
 {
 public:
     VerticalTextSlider (juce::String parameterName,
@@ -152,11 +160,19 @@ private:
     bool visualizationValid = false;
 };
 
-class TrimSlider final : public juce::Slider
+class BandTrimControl final : public ResettableSlider
 {
 public:
+    BandTrimControl();
     void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void lookAndFeelChanged() override;
+
+private:
+    void updateValueText();
+    juce::Label valueLabel;
+    bool updatingText = false;
 };
 
 class MultibandPanel final : public juce::Component,
@@ -171,6 +187,7 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
 
@@ -184,8 +201,20 @@ private:
     [[nodiscard]] juce::Rectangle<float> analyzerBounds() const;
     [[nodiscard]] float frequencyToX (float frequency) const;
     [[nodiscard]] float xToFrequency (float x) const;
+    [[nodiscard]] juce::Rectangle<float> slopeBadgeBounds (int crossover) const;
     [[nodiscard]] int crossoverAt (juce::Point<float>, bool badgeOnly) const;
+    [[nodiscard]] int crossoverForResetAt (juce::Point<float>) const;
     [[nodiscard]] int bandAt (float x) const;
+    [[nodiscard]] juce::Rectangle<float> bandBounds (int band) const;
+    [[nodiscard]] float trimToY (float trimDb) const;
+    [[nodiscard]] float yToTrim (float y) const;
+    [[nodiscard]] int trimAt (juce::Point<float>) const;
+    void resetTrim (int band);
+    void resetCrossover (int crossover);
+    void bindTrimControl (int band);
+    void beginTrimDrag (int band, float y);
+    void updateTrimDrag (float y);
+    void endTrimDrag();
     void showBandCountMenu();
     void showSlopeMenu (int crossover);
 
@@ -205,13 +234,19 @@ private:
     int historyPosition = 0;
     int hoveredCrossover = -1;
     int draggedCrossover = -1;
+    int hoveredTrimBand = -1;
+    int draggedTrimBand = -1;
+    int trimBoundBand = -1;
+    juce::RangedAudioParameter* draggedTrimParameter = nullptr;
 
     juce::TextButton linkButton { "LINK" };
     juce::TextButton bandCountButton { "2 BANDS" };
     juce::TextButton phaseButton { "MIN PHASE" };
     juce::TextButton soloButton { "SOLO" };
     juce::TextButton bypassButton { "BYPASS" };
-    TrimSlider trimSlider;
+    BandTrimControl trimControl;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
+        trimAttachment;
 };
 
 class DefaultDistortionAudioProcessorEditor final
@@ -255,6 +290,7 @@ private:
     TriangleButton previousModeButton { false };
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
+    juce::TextButton pluginPowerButton { "ON" };
     juce::TextButton multibandButton { "MULTIBAND" };
     VerticalTextButton asymStereoButton;
     VerticalTextSlider secondarySlider {
@@ -285,6 +321,7 @@ private:
     std::unique_ptr<juce::ParameterAttachment> autoGainAttachment;
     std::unique_ptr<juce::ParameterAttachment> characterAttachment;
     std::unique_ptr<ButtonAttachment> multibandAttachment;
+    std::unique_ptr<ButtonAttachment> pluginPowerAttachment;
 
     int displayedMode = -1;
     int displayedAutoGainMode = -1;
