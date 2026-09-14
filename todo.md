@@ -275,7 +275,7 @@ These are mandatory safeguards, not optional retrospective notes.
 - [x] Feed identical deterministic signals into `default_eq` and
   `default_distortion`; compare RTA bins, smoothing, peaks, grid values, update
   cadence, and rendered paths within documented numeric and pixel tolerances.
-- [ ] Cover compact/expanded, light/dark, Single/Multiband, linked/unlinked,
+- [x] Cover compact/expanded, light/dark, Single/Multiband, linked/unlinked,
   2/3/4 bands, all algorithm-dependent labels, disabled controls, every popup,
   minimum/default/2x/3x scale, and macOS/Windows/Linux rendering.
 - [x] Run Release builds, the complete CTest suite, pluginval strictness 10,
