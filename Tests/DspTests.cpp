@@ -287,6 +287,30 @@ void testMultibandCrossoversAndSmartGain (TestContext& context)
         processor.isSmartAutoGainLocked()
             && processor.getSmartAutoGainProgress() >= 0.999f,
         "Multiband Smart Auto Gain did not lock on the summed signal");
+    multiband.bands[0].saturation.route = 1;
+    fillSignal (buffer, phase);
+    processor.process (buffer, master, multiband, -1);
+    context.expect (
+        ! processor.isSmartAutoGainLocked()
+            && processor.getSmartAutoGainProgress() < 0.999f,
+        "Unlinked band ROUTE does not restart multiband Smart Auto Gain");
+    for (int block = 0; block < 220; ++block)
+    {
+        fillSignal (buffer, phase);
+        processor.process (buffer, master, multiband, -1);
+    }
+    context.expect (
+        processor.isSmartAutoGainLocked(),
+        "Multiband Smart Auto Gain did not relock after ROUTE changed");
+    multiband.bands[0].saturation.placementPercent = 100.0f;
+    fillSignal (buffer, phase);
+    processor.process (buffer, master, multiband, -1);
+    context.expect (
+        ! processor.isSmartAutoGainLocked()
+            && processor.getSmartAutoGainProgress() < 0.999f,
+        "Unlinked band PLACEMENT does not restart multiband Smart Auto Gain");
+    multiband.bands[0].saturation.route = 0;
+    multiband.bands[0].saturation.placementPercent = 0.0f;
 
     dd::MultibandProcessor linear;
     linear.prepare (sampleRate, 256, 2);
@@ -3262,6 +3286,9 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
         neutral.dynamicPercent == 0.0f,
         "0.9 Dynamic default is not neutral");
     context.expect (
+        neutral.speedPercent == 100.0f,
+        "0.9 Speed default is not 100%");
+    context.expect (
         neutral.inputHpHz == 0.0f,
         "0.9 Input HP default is not OFF");
     context.expect (
@@ -3296,11 +3323,12 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
     const auto measure = [] (dd::Parameters parameters,
                              double frequency,
                              float amplitude,
-                             const juce::AudioBuffer<float>* externalDetector)
+                             const juce::AudioBuffer<float>* externalDetector,
+                             int autoGainMode = 0)
     {
         dd::DistortionEngine engine;
         engine.prepare (sampleRate, testSamples, 2);
-        parameters.autoGainMode = 0;
+        parameters.autoGainMode = autoGainMode;
         juce::AudioBuffer<float> audio (2, testSamples);
         juce::AudioBuffer<float> localDetector (2, testSamples);
         double oscillator = 0.0;
@@ -3348,6 +3376,33 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
     context.expect (
         positive > negative * 1.05,
         "Positive Dynamic does not drive loud input harder than negative Dynamic");
+
+    auto compensatedDynamicParameters = dynamic;
+    compensatedDynamicParameters.driveDb = 6.0f;
+    auto staticDrive = compensatedDynamicParameters;
+    staticDrive.dynamicPercent = 0.0f;
+    const auto uncompensatedStatic = measure (
+        staticDrive, 997.0, 0.2f, nullptr, 0);
+    const auto uncompensatedDynamic = measure (
+        compensatedDynamicParameters, 997.0, 0.2f, nullptr, 0);
+    const auto regularStatic = measure (
+        staticDrive, 997.0, 0.2f, nullptr, 1);
+    const auto regularDynamic = measure (
+        compensatedDynamicParameters, 997.0, 0.2f, nullptr, 1);
+    const auto uncompensatedDeltaDb = std::abs (
+        juce::Decibels::gainToDecibels (
+            static_cast<float> (uncompensatedDynamic
+                / juce::jmax (1.0e-12, uncompensatedStatic))));
+    const auto regularDeltaDb = std::abs (
+        juce::Decibels::gainToDecibels (
+            static_cast<float> (regularDynamic
+                / juce::jmax (1.0e-12, regularStatic))));
+    context.expect (
+        regularDeltaDb < uncompensatedDeltaDb * 0.75f,
+        "Regular Auto Gain does not compensate Dynamic Drive (raw delta "
+            + juce::String (uncompensatedDeltaDb, 2)
+            + " dB, compensated delta " + juce::String (regularDeltaDb, 2)
+            + " dB)");
 
     dd::Parameters filter;
     filter.mix = 0.0f;

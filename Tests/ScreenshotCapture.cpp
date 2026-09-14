@@ -120,7 +120,7 @@ bool capture (const juce::File& outputDirectory,
             setPlainValue (processor, dd::ParamIDs::band (index, "Character"),
                            0.5f);
             setPlainValue (processor, dd::ParamIDs::band (index, "Speed"),
-                           50.0f);
+                           100.0f);
             setPlainValue (processor, dd::ParamIDs::band (index, "InputHp"),
                            0.0f);
             setPlainValue (processor, dd::ParamIDs::band (index, "OutputLp"),

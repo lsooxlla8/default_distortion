@@ -121,6 +121,7 @@ must not be used as the 0.9.0 layout reference.
 
 - Add `DYNAMIC` in `-100…0…+100%` and `SPEED` in `0…100%` to the master context
   and every multiband saturation context.
+- Default `SPEED` to `100%` for new instances and migrated pre-0.9 states.
 - Implement the exact control law:
 
   `effective Drive = clamp(base Drive + envelope × Dynamic range, 0, 36 dB)`
@@ -141,6 +142,8 @@ must not be used as the 0.9.0 layout reference.
 - Smooth Drive modulation without bypassing the existing parameter, automation,
   Auto Gain, oversampling, or stage behavior. No Dynamic state may write back into
   the base Drive parameter.
+- Regular Auto Gain must compensate the sample-level effective Drive produced by
+  Dynamic; Smart Auto Gain keeps its existing finite programme measurement.
 - Prevent denormals, NaN/Inf values, block-size dependence, and modulation beyond
   the existing `0…36 dB` Drive range.
 

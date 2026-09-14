@@ -1237,12 +1237,6 @@ void AlgorithmButton::paintButton (juce::Graphics& graphics,
         line.withTrimmedLeft (fittedNumberWidth + gap),
         12.0f, true, -0.03f, ink,
         juce::Justification::centredLeft, scale);
-    if ((bool) getProperties().getWithDefault ("pickerOpen", false))
-    {
-        graphics.setColour (ink);
-        graphics.drawRect (
-            getLocalBounds(), juce::jmax (1, juce::roundToInt (scale)));
-    }
 }
 
 HeaderActionButton::HeaderActionButton (juce::String label,
@@ -2914,7 +2908,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     stages.slider.setDoubleClickReturnValue (true, 1.0);
     placement.slider.setDoubleClickReturnValue (true, 0.0);
     dynamic.slider.setDoubleClickReturnValue (true, 0.0);
-    speed.slider.setDoubleClickReturnValue (true, 50.0);
+    speed.slider.setDoubleClickReturnValue (true, 100.0);
     inputHp.slider.setDoubleClickReturnValue (true, 0.0);
     outputLp.slider.setDoubleClickReturnValue (true, 20000.0);
     mix.slider.setDoubleClickReturnValue (true, 1.0);

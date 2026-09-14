@@ -131,7 +131,7 @@ void initialiseVersionSixParameters (juce::ValueTree& state)
         setStateParameterValue (state, prefix + "Route", 0.0f);
         setStateParameterValue (state, prefix + "Placement", 0.0f);
         setStateParameterValue (state, prefix + "Dynamic", 0.0f);
-        setStateParameterValue (state, prefix + "Speed", 50.0f);
+        setStateParameterValue (state, prefix + "Speed", 100.0f);
         setStateParameterValue (state, prefix + "InputHp", 0.0f);
         setStateParameterValue (state, prefix + "OutputLp", 20000.0f);
     };
@@ -139,7 +139,7 @@ void initialiseVersionSixParameters (juce::ValueTree& state)
     setStateParameterValue (state, ParamIDs::route, 0.0f);
     setStateParameterValue (state, ParamIDs::placement, 0.0f);
     setStateParameterValue (state, ParamIDs::dynamic, 0.0f);
-    setStateParameterValue (state, ParamIDs::speed, 50.0f);
+    setStateParameterValue (state, ParamIDs::speed, 100.0f);
     setStateParameterValue (state, ParamIDs::inputHp, 0.0f);
     setStateParameterValue (state, ParamIDs::outputLp, 20000.0f);
     for (int band = 0; band < MultibandParameters::maximumBands; ++band)
@@ -495,7 +495,7 @@ DefaultDistortionAudioProcessor::createLayout()
         layout.add (std::make_unique<Float> (
             id ("Speed"), prefix + "Speed",
             juce::NormalisableRange<float> { 0.0f, 100.0f, 0.1f },
-            50.0f, speedAttributes));
+            100.0f, speedAttributes));
         layout.add (std::make_unique<Float> (
             id ("InputHp"), prefix + "Input HP",
             inputHpRange, 0.0f, hpAttributes));

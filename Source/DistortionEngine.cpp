@@ -1776,6 +1776,9 @@ void DistortionEngine::processInternal (
                 : smartGainLinear));
     const auto gainAtBlockStart = autoGainLinear;
     autoGainLinear = targetAutoGain;
+    const auto regularDynamicAutoGain = effectiveAutoGainMode == 1
+        && dynamicDriveSamples > 0
+        && activeDynamicDriveOffsets != nullptr;
 
     for (int sample = 0; sample < samples; ++sample)
     {
@@ -1783,8 +1786,33 @@ void DistortionEngine::processInternal (
             ? static_cast<float> (sample)
                 / static_cast<float> (samples - 1)
             : 1.0f;
-        const auto makeup = lerp (
+        auto makeup = lerp (
             gainAtBlockStart, autoGainLinear, ramp);
+        if (regularDynamicAutoGain)
+        {
+            const auto dynamicIndex = mode == Mode::spectralClip
+                ? dynamicDriveSamples - 1
+                : juce::jmin (
+                    dynamicDriveSamples - 1,
+                    sample * dynamicDriveSamples / juce::jmax (1, samples));
+            Parameters baseGainParameters = smoothed;
+            baseGainParameters.driveDb = juce::jlimit (
+                0.0f,
+                36.0f,
+                lerp (blockStart.driveDb, smoothed.driveDb, ramp));
+            auto effectiveGainParameters = baseGainParameters;
+            effectiveGainParameters.driveDb = juce::jlimit (
+                0.0f,
+                36.0f,
+                baseGainParameters.driveDb
+                    + activeDynamicDriveOffsets[static_cast<size_t> (
+                        dynamicIndex)]);
+            const auto baseGain = lookupDeterministicGain (
+                baseGainParameters, sampleRate);
+            const auto effectiveGain = lookupDeterministicGain (
+                effectiveGainParameters, sampleRate);
+            makeup *= effectiveGain / juce::jmax (1.0e-9f, baseGain);
+        }
         const auto lpMix = outputLpMix.getNextValue();
         for (int channel = 0; channel < channels; ++channel)
         {

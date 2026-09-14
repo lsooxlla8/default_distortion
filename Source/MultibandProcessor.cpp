@@ -853,9 +853,22 @@ std::uint64_t hashParameters (const Parameters& master,
         add (std::bit_cast<std::uint32_t> (values.saturation.character));
         add (std::bit_cast<std::uint32_t> (values.saturation.secondary));
         add (std::bit_cast<std::uint32_t> (values.saturation.asymmetry));
+        add (static_cast<std::uint32_t> (
+            values.saturation.asymmetryStereo));
         add (std::bit_cast<std::uint32_t> (values.saturation.tone));
         add (static_cast<std::uint32_t> (values.saturation.stages));
         add (std::bit_cast<std::uint32_t> (values.saturation.mix));
+        add (static_cast<std::uint32_t> (values.saturation.route));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.placementPercent));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.dynamicPercent));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.speedPercent));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.inputHpHz));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.outputLpHz));
         add (static_cast<std::uint32_t> (values.bypass));
         add (std::bit_cast<std::uint32_t> (values.trimDb));
     }

@@ -177,8 +177,8 @@ void testManifestAndDefaults (TestContext& context)
     context.expect (std::abs (current.dynamicPercent) < 0.001f,
                     "DYNAMIC default is not neutral: "
                         + juce::String (current.dynamicPercent));
-    context.expect (current.speedPercent == 50.0f,
-                    "SPEED default is not 50%");
+    context.expect (current.speedPercent == 100.0f,
+                    "SPEED default is not 100%");
     context.expect (current.inputHpHz == 0.0f,
                     "INPUT HP default is not OFF");
     context.expect (current.outputLpHz == 20000.0f,
@@ -232,7 +232,7 @@ void testVersionFiveMigration (TestContext& context)
                     "v5 PLACEMENT did not migrate to neutral");
     context.expect (std::abs (current.dynamicPercent) < 0.001f,
                     "v5 DYNAMIC did not migrate to neutral");
-    context.expect (current.speedPercent == 50.0f,
+    context.expect (current.speedPercent == 100.0f,
                     "v5 SPEED did not migrate to default");
     context.expect (current.inputHpHz == 0.0f,
                     "v5 INPUT HP did not migrate to OFF");
@@ -248,7 +248,7 @@ void testVersionFiveMigration (TestContext& context)
                         "v5 band PLACEMENT migration failed");
         context.expect (std::abs (values.dynamicPercent) < 0.001f,
                         "v5 band DYNAMIC migration failed");
-        context.expect (values.speedPercent == 50.0f,
+        context.expect (values.speedPercent == 100.0f,
                         "v5 band SPEED migration failed");
         context.expect (values.inputHpHz == 0.0f,
                         "v5 band INPUT HP migration failed");
@@ -427,6 +427,8 @@ void testPopupLifecycleContract (TestContext& context)
                     "Algorithm selector is missing");
     if (mode != nullptr && mode->onClick != nullptr)
     {
+        const auto closedSelector = mode->createComponentSnapshot (
+            mode->getLocalBounds(), true, 1.0f);
         mode->onClick();
         context.expect (
             findVisibleDesktopComponent (640, 182) != nullptr,
@@ -434,6 +436,22 @@ void testPopupLifecycleContract (TestContext& context)
         context.expect ((bool) mode->getProperties().getWithDefault (
                             "pickerOpen", false),
                         "Algorithm selector did not enter open state");
+        const auto openSelector = mode->createComponentSnapshot (
+            mode->getLocalBounds(), true, 1.0f);
+        auto selectorChanged = closedSelector.getWidth()
+                != openSelector.getWidth()
+            || closedSelector.getHeight() != openSelector.getHeight();
+        for (int y = 0; ! selectorChanged && y < closedSelector.getHeight(); ++y)
+            for (int x = 0; x < closedSelector.getWidth(); ++x)
+                if (closedSelector.getPixelAt (x, y).getARGB()
+                    != openSelector.getPixelAt (x, y).getARGB())
+                {
+                    selectorChanged = true;
+                    break;
+                }
+        context.expect (
+            ! selectorChanged,
+            "Algorithm selector draws an open-state outline");
         mode->onClick();
         context.expect (
             findVisibleDesktopComponent (640, 182) == nullptr,

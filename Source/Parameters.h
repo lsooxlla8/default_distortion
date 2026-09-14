@@ -65,7 +65,7 @@ struct Parameters
     int route = 0;
     float placementPercent = 0.0f;
     float dynamicPercent = 0.0f;
-    float speedPercent = 50.0f;
+    float speedPercent = 100.0f;
     float inputHpHz = 0.0f;
     float outputLpHz = 20000.0f;
 };

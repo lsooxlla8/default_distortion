@@ -77,7 +77,7 @@
       placementMode: 0,
       placement: 0,
       dynamic: 0,
-      speed: 50,
+      speed: 100,
       inputHp: 20,
       tone: 0,
       stages: 1,
