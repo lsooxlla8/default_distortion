@@ -825,7 +825,7 @@ juce::Label* GeometricLookAndFeel::createSliderTextBox (juce::Slider& slider)
     label->getProperties().set ("prototypeSliderValue", true);
     label->setFont (monoFont (
         ((slider.getName() == "MIX" || slider.getName() == "OUT")
-             ? 10.0f : 12.0f) * uiScale,
+             ? 9.0f : 12.0f) * uiScale,
         true));
     return label;
 }
@@ -854,7 +854,7 @@ void GeometricLookAndFeel::drawLabel (juce::Graphics& graphics,
         graphics,
         label.getText(),
         label.getLocalBounds().toFloat(),
-        controlTitle ? 9.0f : (compact ? 10.0f : 12.0f),
+        controlTitle ? 9.0f : (compact ? 9.0f : 12.0f),
         true,
         controlTitle ? 0.02f : 0.0f,
         label.findColour (juce::Label::textColourId),
@@ -918,7 +918,7 @@ juce::Font GeometricLookAndFeel::getLabelFont (juce::Label& label)
     if (const auto* slider = dynamic_cast<const juce::Slider*> (
             label.getParentComponent()))
         if (slider->getName() == "MIX" || slider->getName() == "OUT")
-            return monoFont (10.0f * uiScale, true);
+            return monoFont (9.0f * uiScale, true);
     return monoFont (12.0f * uiScale, true);
 }
 
@@ -982,7 +982,7 @@ void BrandButton::paintButton (
         graphics,
         getButtonText(),
         getLocalBounds().toFloat().reduced (12.0f * scale, 0.0f),
-        16.0f,
+        18.0f,
         true,
         -0.06f,
         isDown ? mutedOf (*this) : foregroundOf (*this),
@@ -1206,11 +1206,19 @@ void AlgorithmButton::paintButton (juce::Graphics& graphics,
     const auto ink = foregroundOf (*this);
     const auto numberText = juce::String (number).paddedLeft ('0', 2);
     const auto numberWidth = prototypeTextWidth (
-        numberText, 10.0f, true, 0.0f, scale);
+        numberText, 12.0f, true, 0.0f, scale);
     const auto nameWidth = prototypeTextWidth (
-        modeName, 10.0f, true, -0.03f, scale);
+        modeName, 12.0f, true, -0.03f, scale);
     const auto gap = 6.0f * scale;
-    const auto totalWidth = numberWidth + gap + nameWidth;
+    const auto availableWidth = juce::jmax (
+        0.0f, static_cast<float> (getWidth()) - 12.0f * scale);
+    const auto horizontalScale = juce::jmin (
+        1.0f,
+        juce::jmax (0.0f, availableWidth - gap)
+            / juce::jmax (1.0f, numberWidth + nameWidth));
+    const auto fittedNumberWidth = numberWidth * horizontalScale;
+    const auto fittedNameWidth = nameWidth * horizontalScale;
+    const auto totalWidth = fittedNumberWidth + gap + fittedNameWidth;
     const auto left = getLocalBounds().toFloat().getCentreX()
         - totalWidth * 0.5f;
     const auto line = juce::Rectangle<float> {
@@ -1221,13 +1229,13 @@ void AlgorithmButton::paintButton (juce::Graphics& graphics,
     };
     drawPrototypeText (
         graphics, numberText,
-        line.withWidth (numberWidth),
-        10.0f, true, 0.0f, ink,
+        line.withWidth (fittedNumberWidth),
+        12.0f, true, 0.0f, ink,
         juce::Justification::centredLeft, scale);
     drawPrototypeText (
         graphics, modeName,
-        line.withTrimmedLeft (numberWidth + gap),
-        10.0f, true, -0.03f, ink,
+        line.withTrimmedLeft (fittedNumberWidth + gap),
+        12.0f, true, -0.03f, ink,
         juce::Justification::centredLeft, scale);
     if ((bool) getProperties().getWithDefault ("pickerOpen", false))
     {
@@ -1284,7 +1292,7 @@ void HeaderActionButton::paintButton (juce::Graphics& graphics,
         && valueText == "OFF";
     drawPrototypeText (
         graphics, valueText, valueBounds,
-        headerLabel == "OS" ? 12.0f : 13.0f,
+        12.0f,
         true, 0.0f,
         foreground.withAlpha (dimValue ? 0.42f : 1.0f),
         justification, scale);
