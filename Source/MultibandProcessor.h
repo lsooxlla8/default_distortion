@@ -20,9 +20,12 @@ public:
     void process (juce::AudioBuffer<float>&,
                   const Parameters& master,
                   const MultibandParameters& multiband,
-                  int soloBand);
+                  int soloBand,
+                  const juce::AudioBuffer<float>* detectorInput = nullptr);
 
     [[nodiscard]] int getLatencySamples (bool linearPhase) const noexcept;
+    [[nodiscard]] int getMaximumLatencySamples (bool linearPhase) const noexcept;
+    [[nodiscard]] int getBaseLatencySamples (bool linearPhase) const noexcept;
     [[nodiscard]] float getSmartAutoGainProgress() const noexcept;
     [[nodiscard]] bool isSmartAutoGainLocked() const noexcept;
 

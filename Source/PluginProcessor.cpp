@@ -7,7 +7,7 @@ namespace dd
 {
 namespace
 {
-constexpr int currentStateSchemaVersion = 5;
+constexpr int currentStateSchemaVersion = 6;
 constexpr auto stateSchemaProperty = "defaultDistortionStateSchema";
 constexpr std::array<const char*, 3> crossoverFrequencyIds {
     "crossover1Frequency", "crossover2Frequency", "crossover3Frequency"
@@ -122,6 +122,28 @@ void initialiseVersionFourParameters (juce::ValueTree& state)
 void initialiseVersionFiveParameters (juce::ValueTree& state)
 {
     setStateParameterValue (state, ParamIDs::pluginEnabled, 1.0f);
+}
+
+void initialiseVersionSixParameters (juce::ValueTree& state)
+{
+    const auto initialise = [&state] (const juce::String& prefix)
+    {
+        setStateParameterValue (state, prefix + "Route", 0.0f);
+        setStateParameterValue (state, prefix + "Placement", 0.0f);
+        setStateParameterValue (state, prefix + "Dynamic", 0.0f);
+        setStateParameterValue (state, prefix + "Speed", 50.0f);
+        setStateParameterValue (state, prefix + "InputHp", 0.0f);
+        setStateParameterValue (state, prefix + "OutputLp", 20000.0f);
+    };
+
+    setStateParameterValue (state, ParamIDs::route, 0.0f);
+    setStateParameterValue (state, ParamIDs::placement, 0.0f);
+    setStateParameterValue (state, ParamIDs::dynamic, 0.0f);
+    setStateParameterValue (state, ParamIDs::speed, 50.0f);
+    setStateParameterValue (state, ParamIDs::inputHp, 0.0f);
+    setStateParameterValue (state, ParamIDs::outputLp, 20000.0f);
+    for (int band = 0; band < MultibandParameters::maximumBands; ++band)
+        initialise ("band" + juce::String (band + 1));
 }
 } // namespace
 
@@ -397,6 +419,115 @@ DefaultDistortionAudioProcessor::createLayout()
                 })));
     }
 
+    // 0.9 parameters are deliberately appended after the complete 0.8
+    // manifest. Existing host parameter indices and automation lanes must not
+    // move when a session is opened with the new version.
+    const auto percentAttributes = juce::AudioParameterFloatAttributes {}
+        .withLabel ("%")
+        .withStringFromValueFunction ([] (float value, int)
+        {
+            const auto rounded = juce::roundToInt (value);
+            return juce::String (rounded > 0 ? "+" : "")
+                + juce::String (rounded) + "%";
+        });
+    const auto speedAttributes = juce::AudioParameterFloatAttributes {}
+        .withLabel ("%")
+        .withStringFromValueFunction ([] (float value, int)
+        {
+            return juce::String (juce::roundToInt (value)) + "%";
+        });
+    auto inputHpRange = juce::NormalisableRange<float> {
+        0.0f, 200.0f,
+        [] (float, float, float normalised)
+        {
+            if (normalised <= 0.0f)
+                return 0.0f;
+            return std::exp (normalised * std::log (200.0f));
+        },
+        [] (float, float, float value)
+        {
+            if (value <= 0.0f)
+                return 0.0f;
+            return std::log (juce::jlimit (1.0f, 200.0f, value))
+                / std::log (200.0f);
+        },
+        [] (float, float, float value)
+        {
+            return value <= 0.5f ? 0.0f
+                                 : juce::jlimit (1.0f, 200.0f, value);
+        }};
+    auto outputLpRange = juce::NormalisableRange<float> {
+        2000.0f, 20000.0f, 1.0f
+    };
+    outputLpRange.setSkewForCentre (6324.555f);
+    const auto hpAttributes = juce::AudioParameterFloatAttributes {}
+        .withLabel ("Hz")
+        .withStringFromValueFunction ([] (float value, int)
+        {
+            return value <= 0.5f ? juce::String { "OFF" }
+                                 : juce::String (juce::roundToInt (value)) + " Hz";
+        });
+    const auto lpAttributes = juce::AudioParameterFloatAttributes {}
+        .withLabel ("Hz")
+        .withStringFromValueFunction ([] (float value, int)
+        {
+            if (value >= 19999.5f)
+                return juce::String { "OFF" };
+            return value >= 10000.0f
+                ? juce::String (value / 1000.0f, 1) + " kHz"
+                : juce::String (value / 1000.0f, 2) + " kHz";
+        });
+
+    const auto addNewContextParameters = [&] (const auto& id,
+                                               const juce::String& prefix)
+    {
+        layout.add (std::make_unique<Choice> (
+            id ("Route"), prefix + "Route",
+            juce::StringArray { "M/S", "T/S" }, 0));
+        layout.add (std::make_unique<Float> (
+            id ("Placement"), prefix + "Placement",
+            juce::NormalisableRange<float> { -100.0f, 100.0f, 0.1f },
+            0.0f, percentAttributes));
+        layout.add (std::make_unique<Float> (
+            id ("Dynamic"), prefix + "Dynamic",
+            juce::NormalisableRange<float> { -100.0f, 100.0f, 0.1f },
+            0.0f, percentAttributes));
+        layout.add (std::make_unique<Float> (
+            id ("Speed"), prefix + "Speed",
+            juce::NormalisableRange<float> { 0.0f, 100.0f, 0.1f },
+            50.0f, speedAttributes));
+        layout.add (std::make_unique<Float> (
+            id ("InputHp"), prefix + "Input HP",
+            inputHpRange, 0.0f, hpAttributes));
+        layout.add (std::make_unique<Float> (
+            id ("OutputLp"), prefix + "Output LP",
+            outputLpRange, 20000.0f, lpAttributes));
+    };
+
+    addNewContextParameters (
+        [] (const char* suffix)
+        {
+            if (juce::String (suffix) == "Route")
+                return juce::ParameterID { ParamIDs::route, 1 };
+            if (juce::String (suffix) == "Placement")
+                return juce::ParameterID { ParamIDs::placement, 1 };
+            if (juce::String (suffix) == "Dynamic")
+                return juce::ParameterID { ParamIDs::dynamic, 1 };
+            if (juce::String (suffix) == "Speed")
+                return juce::ParameterID { ParamIDs::speed, 1 };
+            if (juce::String (suffix) == "InputHp")
+                return juce::ParameterID { ParamIDs::inputHp, 1 };
+            return juce::ParameterID { ParamIDs::outputLp, 1 };
+        },
+        {});
+    for (int band = 0; band < MultibandParameters::maximumBands; ++band)
+        addNewContextParameters (
+            [band] (const char* suffix)
+            {
+                return juce::ParameterID { ParamIDs::band (band, suffix), 1 };
+            },
+            "Band " + juce::String (band + 1) + " ");
+
     return layout;
 }
 
@@ -414,13 +545,19 @@ void DefaultDistortionAudioProcessor::prepareToPlay (double newSampleRate,
     analyzerInputBuffer.setSize (
         juce::jmax (1, getTotalNumOutputChannels()),
         juce::jmax (1, samplesPerBlock), false, false, true);
+    dynamicDetectorInputBuffer.setSize (
+        juce::jmax (1, getTotalNumOutputChannels()),
+        juce::jmax (1, samplesPerBlock), false, false, true);
     const auto maximumProcessingLatency = juce::jmax (
-        engine.getLatencySamples(), multibandEngine.getLatencySamples (true));
+        engine.getMaximumLatencySamples(),
+        multibandEngine.getMaximumLatencySamples (true));
     analyzerInputDelayBuffer.setSize (
         juce::jmax (1, getTotalNumOutputChannels()),
         maximumProcessingLatency + juce::jmax (1, samplesPerBlock) + 1,
         false, true, true);
     analyzerInputDelayPosition = 0;
+    analyzerInputFifo.reset();
+    analyzerOutputFifo.reset();
     globalBypass.prepare (
         newSampleRate,
         samplesPerBlock,
@@ -428,14 +565,17 @@ void DefaultDistortionAudioProcessor::prepareToPlay (double newSampleRate,
         maximumProcessingLatency,
         parameters.getRawParameterValue (ParamIDs::pluginEnabled)->load()
             >= 0.5f);
+    latencyTransitionGain.reset (newSampleRate, 0.005);
+    latencyTransitionGain.setCurrentAndTargetValue (1.0f);
     // Prime deterministic compensation on the host setup thread. Subsequent
     // edits use the pre-generated table directly in the audio callback; no
     // programme measurement or background recalibration is involved.
     engine.primeAutoGain (getCurrentParameters());
-    const auto multiband = getCurrentMultibandParameters();
-    const auto latency = multiband.enabled
-        ? multibandEngine.getLatencySamples (multiband.phaseMode == 1)
-        : engine.getLatencySamples();
+    processingMaster = getCurrentParameters();
+    processingMultiband = getCurrentMultibandParameters();
+    latencyChangePending = false;
+    const auto latency = requestedLatencySamples (
+        processingMaster, processingMultiband);
     reportedLatency.store (latency, std::memory_order_relaxed);
     setLatencySamples (latency);
 }
@@ -449,6 +589,8 @@ void DefaultDistortionAudioProcessor::releaseResources()
             >= 0.5f);
     analyzerInputDelayBuffer.clear();
     analyzerInputDelayPosition = 0;
+    analyzerInputFifo.reset();
+    analyzerOutputFifo.reset();
 }
 
 bool DefaultDistortionAudioProcessor::isBusesLayoutSupported (
@@ -475,7 +617,11 @@ void DefaultDistortionAudioProcessor::processBlock (
 
     globalBypass.captureInput (buffer);
 
-    const auto shouldAnalyze = analyzerEnabled.load (std::memory_order_relaxed);
+    dynamicDetectorInputBuffer.setSize (
+        buffer.getNumChannels(), buffer.getNumSamples(), false, false, true);
+    dynamicDetectorInputBuffer.makeCopyOf (buffer, true);
+
+    const auto shouldAnalyze = analyzerEnabled.load (std::memory_order_acquire);
     if (shouldAnalyze)
     {
         analyzerInputBuffer.setSize (
@@ -483,8 +629,49 @@ void DefaultDistortionAudioProcessor::processBlock (
         analyzerInputBuffer.makeCopyOf (buffer, true);
     }
     inputPeak.store (calculatePeak (buffer), std::memory_order_relaxed);
-    const auto master = getCurrentParameters();
-    const auto multiband = getCurrentMultibandParameters();
+    for (int channel = 0; channel < 2; ++channel)
+        inputChannelPeaks[static_cast<size_t> (channel)].store (
+            buffer.getMagnitude (
+                juce::jmin (channel, buffer.getNumChannels() - 1),
+                0,
+                buffer.getNumSamples()),
+            std::memory_order_relaxed);
+    const auto requestedMaster = getCurrentParameters();
+    const auto requestedMultiband = getCurrentMultibandParameters();
+    const auto desiredLatency = requestedLatencySamples (
+        requestedMaster, requestedMultiband);
+    const auto currentLatency = reportedLatency.load (std::memory_order_relaxed);
+    if (latencyChangePending
+        && desiredLatency == currentLatency)
+    {
+        latencyChangePending = false;
+        latencyTransitionGain.setTargetValue (1.0f);
+        processingMaster = requestedMaster;
+        processingMultiband = requestedMultiband;
+    }
+    else if (latencyChangePending
+             && latencyTransitionGain.getCurrentValue() == 0.0f
+             && ! latencyTransitionGain.isSmoothing())
+    {
+        processingMaster = requestedMaster;
+        processingMultiband = requestedMultiband;
+        reportedLatency.store (desiredLatency, std::memory_order_relaxed);
+        setLatencySamples (desiredLatency);
+        latencyChangePending = false;
+        latencyTransitionGain.setTargetValue (1.0f);
+    }
+    else if (! latencyChangePending && desiredLatency != currentLatency)
+    {
+        latencyChangePending = true;
+        latencyTransitionGain.setTargetValue (0.0f);
+    }
+    else if (! latencyChangePending)
+    {
+        processingMaster = requestedMaster;
+        processingMultiband = requestedMultiband;
+    }
+    const auto& master = processingMaster;
+    const auto& multiband = processingMultiband;
     const auto pluginEnabled =
         parameters.getRawParameterValue (ParamIDs::pluginEnabled)->load()
             >= 0.5f;
@@ -495,27 +682,38 @@ void DefaultDistortionAudioProcessor::processBlock (
                 buffer,
                 master,
                 multiband,
-                soloBand.load (std::memory_order_relaxed));
+                soloBand.load (std::memory_order_relaxed),
+                &dynamicDetectorInputBuffer);
         else
-            engine.process (buffer, master);
+            engine.process (buffer, master, &dynamicDetectorInputBuffer);
     }
-    const auto requiredLatency = multiband.enabled
-        ? multibandEngine.getLatencySamples (multiband.phaseMode == 1)
-        : engine.getLatencySamples();
-    if (requiredLatency != reportedLatency.load (std::memory_order_relaxed))
-    {
-        reportedLatency.store (requiredLatency, std::memory_order_relaxed);
-        setLatencySamples (requiredLatency);
-    }
+    const auto requiredLatency = reportedLatency.load (std::memory_order_relaxed);
     globalBypass.processOutput (
         buffer,
         requiredLatency,
         pluginEnabled);
+    if (latencyTransitionGain.isSmoothing()
+        || latencyTransitionGain.getCurrentValue() != 1.0f)
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            const auto guard = latencyTransitionGain.getNextValue();
+            for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+                buffer.setSample (
+                    channel, sample, buffer.getSample (channel, sample) * guard);
+        }
     outputPeak.store (calculatePeak (buffer), std::memory_order_relaxed);
+    for (int channel = 0; channel < 2; ++channel)
+        outputChannelPeaks[static_cast<size_t> (channel)].store (
+            buffer.getMagnitude (
+                juce::jmin (channel, buffer.getNumChannels() - 1),
+                0,
+                buffer.getNumSamples()),
+            std::memory_order_relaxed);
     if (shouldAnalyze)
     {
         delayAnalyzerInput (analyzerInputBuffer, requiredLatency);
-        pushAnalyzerSamples (analyzerInputBuffer, buffer);
+        analyzerInputFifo.pushBlock (analyzerInputBuffer);
+        analyzerOutputFifo.pushBlock (buffer);
     }
 }
 
@@ -541,6 +739,19 @@ Parameters DefaultDistortionAudioProcessor::getCurrentParameters() const noexcep
     result.autoGainMode = juce::jlimit (
         0, 2, juce::roundToInt (
             parameters.getRawParameterValue (ParamIDs::autoGain)->load()));
+    result.route = juce::jlimit (
+        0, 1, juce::roundToInt (
+            parameters.getRawParameterValue (ParamIDs::route)->load()));
+    result.placementPercent = parameters.getRawParameterValue (
+        ParamIDs::placement)->load();
+    result.dynamicPercent = parameters.getRawParameterValue (
+        ParamIDs::dynamic)->load();
+    result.speedPercent = parameters.getRawParameterValue (
+        ParamIDs::speed)->load();
+    result.inputHpHz = parameters.getRawParameterValue (
+        ParamIDs::inputHp)->load();
+    result.outputLpHz = parameters.getRawParameterValue (
+        ParamIDs::outputLp)->load();
     return result;
 }
 
@@ -603,6 +814,18 @@ DefaultDistortionAudioProcessor::getCurrentMultibandParameters() const noexcept
             1, DistortionEngine::maximumStages,
             juce::roundToInt (read (bandStagesIds[index])));
         values.saturation.mix = read (bandMixIds[index]);
+        const auto readNew = [this, band] (const char* suffix)
+        {
+            return parameters.getRawParameterValue (
+                ParamIDs::band (band, suffix))->load();
+        };
+        values.saturation.route = juce::jlimit (
+            0, 1, juce::roundToInt (readNew ("Route")));
+        values.saturation.placementPercent = readNew ("Placement");
+        values.saturation.dynamicPercent = readNew ("Dynamic");
+        values.saturation.speedPercent = readNew ("Speed");
+        values.saturation.inputHpHz = readNew ("InputHp");
+        values.saturation.outputLpHz = readNew ("OutputLp");
         values.bypass = read (bandBypassIds[index]) >= 0.5f;
         values.trimDb = read (bandTrimIds[index]);
     }
@@ -618,6 +841,37 @@ float DefaultDistortionAudioProcessor::calculatePeak (
             peak,
             buffer.getMagnitude (channel, 0, buffer.getNumSamples()));
     return peak;
+}
+
+int DefaultDistortionAudioProcessor::requestedLatencySamples (
+    const Parameters& master,
+    const MultibandParameters& multiband) const noexcept
+{
+    const auto usesTransientRouting = [] (const Parameters& values)
+    {
+        return values.route == 1
+            && std::abs (values.placementPercent) >= 1.0e-7f;
+    };
+    if (! multiband.enabled)
+        return usesTransientRouting (master)
+            ? engine.getMaximumLatencySamples()
+            : engine.getBaseLatencySamples();
+
+    auto transientActive = false;
+    if (multiband.linked)
+        transientActive = usesTransientRouting (master);
+    else
+        for (int band = 0;
+             band < juce::jlimit (2, MultibandParameters::maximumBands,
+                                  multiband.bandCount);
+             ++band)
+            transientActive = transientActive
+                || usesTransientRouting (
+                    multiband.bands[static_cast<size_t> (band)].saturation);
+    const auto linearPhase = multiband.phaseMode == 1;
+    return transientActive
+        ? multibandEngine.getMaximumLatencySamples (linearPhase)
+        : multibandEngine.getBaseLatencySamples (linearPhase);
 }
 
 void DefaultDistortionAudioProcessor::setSelectedBand (int band) noexcept
@@ -642,7 +896,7 @@ int DefaultDistortionAudioProcessor::getSoloBand() const noexcept
 
 void DefaultDistortionAudioProcessor::setAnalyzerEnabled (bool enabled) noexcept
 {
-    analyzerEnabled.store (enabled, std::memory_order_relaxed);
+    analyzerEnabled.store (enabled, std::memory_order_release);
 }
 
 void DefaultDistortionAudioProcessor::copyMasterToAllBands (
@@ -669,6 +923,12 @@ void DefaultDistortionAudioProcessor::copyMasterToAllBands (
         set (ParamIDs::band (band, "Tone"), source.tone);
         set (ParamIDs::band (band, "Stages"), static_cast<float> (source.stages));
         set (ParamIDs::band (band, "Mix"), source.mix);
+        set (ParamIDs::band (band, "Route"), static_cast<float> (source.route));
+        set (ParamIDs::band (band, "Placement"), source.placementPercent);
+        set (ParamIDs::band (band, "Dynamic"), source.dynamicPercent);
+        set (ParamIDs::band (band, "Speed"), source.speedPercent);
+        set (ParamIDs::band (band, "InputHp"), source.inputHpHz);
+        set (ParamIDs::band (band, "OutputLp"), source.outputLpHz);
     }
 }
 
@@ -697,6 +957,12 @@ void DefaultDistortionAudioProcessor::copyBandToMasterAndAllBands (
     set (ParamIDs::tone, source.tone);
     set (ParamIDs::stages, static_cast<float> (source.stages));
     set (ParamIDs::mix, source.mix);
+    set (ParamIDs::route, static_cast<float> (source.route));
+    set (ParamIDs::placement, source.placementPercent);
+    set (ParamIDs::dynamic, source.dynamicPercent);
+    set (ParamIDs::speed, source.speedPercent);
+    set (ParamIDs::inputHp, source.inputHpHz);
+    set (ParamIDs::outputLp, source.outputLpHz);
     copyMasterToAllBands (source);
 }
 
@@ -734,35 +1000,6 @@ void DefaultDistortionAudioProcessor::parameterChanged (
     handlingLinkTransition.store (false, std::memory_order_release);
 }
 
-void DefaultDistortionAudioProcessor::pushAnalyzerSamples (
-    const juce::AudioBuffer<float>& input,
-    const juce::AudioBuffer<float>& output) noexcept
-{
-    const auto samples = juce::jmin (input.getNumSamples(), output.getNumSamples());
-    const auto writable = juce::jmin (samples, analyzerFifo.getFreeSpace());
-    if (writable <= 0)
-        return;
-    const auto scope = analyzerFifo.write (writable);
-    int source = 0;
-    const std::array<int, 2> starts { scope.startIndex1, scope.startIndex2 };
-    const std::array<int, 2> sizes { scope.blockSize1, scope.blockSize2 };
-    for (size_t block = 0; block < starts.size(); ++block)
-        for (int sample = 0; sample < sizes[block]; ++sample, ++source)
-        {
-            auto inputMono = 0.0f;
-            auto outputMono = 0.0f;
-            for (int channel = 0; channel < input.getNumChannels(); ++channel)
-                inputMono += input.getSample (channel, source);
-            for (int channel = 0; channel < output.getNumChannels(); ++channel)
-                outputMono += output.getSample (channel, source);
-            inputMono /= static_cast<float> (juce::jmax (1, input.getNumChannels()));
-            outputMono /= static_cast<float> (juce::jmax (1, output.getNumChannels()));
-            const auto destination = starts[block] + sample;
-            analyzerInput[static_cast<size_t> (destination)] = inputMono;
-            analyzerOutput[static_cast<size_t> (destination)] = outputMono;
-        }
-}
-
 void DefaultDistortionAudioProcessor::delayAnalyzerInput (
     juce::AudioBuffer<float>& input,
     int latencySamples) noexcept
@@ -793,27 +1030,25 @@ void DefaultDistortionAudioProcessor::delayAnalyzerInput (
     }
 }
 
-int DefaultDistortionAudioProcessor::pullAnalyzerSamples (
+int DefaultDistortionAudioProcessor::pullAnalyzerFrames (
     float* inputDestination,
     float* outputDestination,
-    int maximumSamples) noexcept
+    int maximumBins) noexcept
 {
-    const auto readable = juce::jmin (
-        juce::jmax (0, maximumSamples), analyzerFifo.getNumReady());
-    if (readable <= 0)
-        return 0;
-    const auto scope = analyzerFifo.read (readable);
-    int destination = 0;
-    const std::array<int, 2> starts { scope.startIndex1, scope.startIndex2 };
-    const std::array<int, 2> sizes { scope.blockSize1, scope.blockSize2 };
-    for (size_t block = 0; block < starts.size(); ++block)
-        for (int sample = 0; sample < sizes[block]; ++sample, ++destination)
-        {
-            const auto source = starts[block] + sample;
-            inputDestination[destination] = analyzerInput[static_cast<size_t> (source)];
-            outputDestination[destination] = analyzerOutput[static_cast<size_t> (source)];
-        }
-    return readable;
+    const auto bins = juce::jlimit (
+        0, SpectrumFIFO::numBins, maximumBins);
+    auto ready = 0;
+    if (analyzerInputFifo.processIfReady())
+    {
+        std::copy_n (analyzerInputFifo.getMagnitudes(), bins, inputDestination);
+        ready |= 1;
+    }
+    if (analyzerOutputFifo.processIfReady())
+    {
+        std::copy_n (analyzerOutputFifo.getMagnitudes(), bins, outputDestination);
+        ready |= 2;
+    }
+    return ready;
 }
 
 juce::AudioProcessorEditor* DefaultDistortionAudioProcessor::createEditor()
@@ -864,6 +1099,8 @@ void DefaultDistortionAudioProcessor::setStateInformation (
                     initialiseVersionFourParameters (state);
                 if (schemaVersion < 5)
                     initialiseVersionFiveParameters (state);
+                if (schemaVersion < 6)
+                    initialiseVersionSixParameters (state);
             }
 
             state.setProperty (
