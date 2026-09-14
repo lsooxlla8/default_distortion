@@ -2483,11 +2483,11 @@ void testRevisedAlgorithmContracts (TestContext& context)
     context.expect (
         dd::DistortionEngine::formatCharacterValue (
             static_cast<int> (dd::DistortionEngine::Mode::sineErosion),
-            0.5f).containsIgnoreCase ("1.00 kHz")
+            0.5f).containsIgnoreCase ("1.0 kHz")
             && dd::DistortionEngine::formatCharacterValue (
                 static_cast<int> (
                     dd::DistortionEngine::Mode::sineErosion),
-                1.0f).containsIgnoreCase ("10.0 kHz"),
+                1.0f).containsIgnoreCase ("10 kHz"),
         "Sine Erosion Frequency scale does not map 50% to 1 kHz and 100% to 10 kHz");
 
     parameters.character = 0.5f;

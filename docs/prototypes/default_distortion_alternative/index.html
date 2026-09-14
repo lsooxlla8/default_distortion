@@ -82,9 +82,9 @@
                 <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
               </label>
 
-              <label class="value-field" data-key="react">
-                <span>REACT</span>
-                <input id="reactValue" class="value-input" type="text" readonly aria-label="Drive envelope reaction">
+              <label class="value-field" data-key="dynamic">
+                <span>DYNAMIC</span>
+                <input id="dynamicValue" class="value-input" type="text" readonly aria-label="Dynamic Drive modulation depth">
                 <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
               </label>
 
@@ -96,6 +96,12 @@
             </div>
 
             <div class="control-row control-row-secondary">
+              <label class="value-field" data-key="inputHp">
+                <span>INPUT HP</span>
+                <input id="inputHpValue" class="value-input" type="text" readonly aria-label="Input high-pass frequency">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
               <label class="value-field" data-key="tone">
                 <span>TONE</span>
                 <input id="toneValue" class="value-input" type="text" readonly aria-label="Tone">
@@ -108,15 +114,9 @@
                 <i class="stage-visual" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></i>
               </label>
 
-              <label class="value-field" data-key="mix">
-                <span>MIX</span>
-                <input id="mixValue" class="value-input" type="text" readonly aria-label="Mix">
-                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
-              </label>
-
-              <label class="value-field" data-key="output">
-                <span>OUT</span>
-                <input id="outputValue" class="value-input" type="text" readonly aria-label="Output">
+              <label class="value-field" data-key="outputLp">
+                <span>OUTPUT LP</span>
+                <input id="outputLpValue" class="value-input" type="text" readonly aria-label="Output low-pass frequency">
                 <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
               </label>
             </div>
@@ -159,6 +159,14 @@
             <span>PHASE</span>
             <strong id="phaseValue">MINIMUM</strong>
           </button>
+          <label class="strip-parameter value-field" data-key="mix">
+            <span>MIX</span>
+            <input id="mixValue" class="value-input" type="text" readonly aria-label="Mix">
+          </label>
+          <label class="strip-parameter value-field" data-key="output">
+            <span>OUT</span>
+            <input id="outputValue" class="value-input" type="text" readonly aria-label="Output">
+          </label>
         </section>
 
         <section class="multiband-panel" id="multibandPanel" aria-label="Multiband controls">

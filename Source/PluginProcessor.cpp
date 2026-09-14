@@ -1060,6 +1060,18 @@ void DefaultDistortionAudioProcessor::getStateInformation (
     juce::MemoryBlock& destinationData)
 {
     auto state = parameters.copyState();
+    // AudioParameterBool keeps the last normalised host value internally even
+    // though hosts observe a discrete 0/1 parameter. Persist the observable
+    // boolean value so a state round-trip cannot restore an intermediate float
+    // such as 0.16 and fail host state-restoration checks.
+    for (auto child : state)
+    {
+        const auto parameterId = child.getProperty ("id").toString();
+        if (const auto* boolean = dynamic_cast<const juce::AudioParameterBool*> (
+                parameters.getParameter (parameterId)))
+            child.setProperty (
+                "value", boolean->get() ? 1.0f : 0.0f, nullptr);
+    }
     state.setProperty (
         stateSchemaProperty, currentStateSchemaVersion, nullptr);
     if (auto xml = state.createXml())
@@ -1107,6 +1119,22 @@ void DefaultDistortionAudioProcessor::setStateInformation (
                 stateSchemaProperty, currentStateSchemaVersion, nullptr);
             restoringState.store (true, std::memory_order_release);
             parameters.replaceState (state);
+            // APVTS may see no ValueTree property change for a boolean whose
+            // logical value stayed false/true, while AudioParameterBool still
+            // holds an intermediate host-normalised float. Force the saved
+            // discrete value back into the parameter object on same-instance
+            // state restoration.
+            for (auto child : state)
+            {
+                const auto parameterId = child.getProperty ("id").toString();
+                if (auto* boolean = dynamic_cast<juce::AudioParameterBool*> (
+                        parameters.getParameter (parameterId)))
+                {
+                    const auto saved = static_cast<float> (
+                        child.getProperty ("value", 0.0f));
+                    boolean->setValueNotifyingHost (saved >= 0.5f ? 1.0f : 0.0f);
+                }
+            }
             lastLinkedState.store (
                 parameters.getRawParameterValue (ParamIDs::multibandLink)->load()
                     >= 0.5f,

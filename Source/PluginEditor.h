@@ -9,6 +9,9 @@
 
 namespace dd
 {
+class PrototypeSimpleMenuWindow;
+class PrototypeModeMenuWindow;
+
 class GeometricLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
@@ -35,6 +38,21 @@ public:
                            float rotaryEndAngle,
                            juce::Slider&) override;
 
+    void drawLinearSlider (juce::Graphics&,
+                           int x,
+                           int y,
+                           int width,
+                           int height,
+                           float sliderPos,
+                           float minSliderPos,
+                           float maxSliderPos,
+                           juce::Slider::SliderStyle,
+                           juce::Slider&) override;
+
+    juce::Slider::SliderLayout getSliderLayout (juce::Slider&) override;
+    juce::Label* createSliderTextBox (juce::Slider&) override;
+    void drawLabel (juce::Graphics&, juce::Label&) override;
+
     void drawComboBox (juce::Graphics&,
                        int width,
                        int height,
@@ -49,6 +67,8 @@ public:
     juce::Font getComboBoxFont (juce::ComboBox&) override;
     juce::Font getLabelFont (juce::Label&) override;
     juce::Font getPopupMenuFont() override;
+    int getPopupMenuBorderSize() override { return 0; }
+    int getMenuWindowFlags() override { return 0; }
     void drawButtonBackground (juce::Graphics&,
                                juce::Button&,
                                const juce::Colour&,
@@ -76,6 +96,17 @@ class ResettableSlider : public juce::Slider
 {
 public:
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+};
+
+class VerticalDragSlider final : public ResettableSlider
+{
+public:
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+
+private:
+    double dragStartProportion = 0.0;
 };
 
 class ParameterControl final : public juce::Component
@@ -85,16 +116,18 @@ public:
 
     void setTitle (const juce::String&);
     void setUiScale (float newScale);
+    void setCompactLayout (bool shouldBeCompact);
     void applyPaletteColours();
     void resized() override;
     void paint (juce::Graphics&) override;
     void lookAndFeelChanged() override;
 
-    ResettableSlider slider;
+    VerticalDragSlider slider;
 
 private:
     juce::Label titleLabel;
     float uiScale = 1.0f;
+    bool compactLayout = false;
 };
 
 class TriangleButton final : public juce::Button
@@ -107,7 +140,31 @@ private:
     bool right = false;
 };
 
-class SmartGainButton final : public juce::TextButton
+class AlgorithmButton final : public juce::TextButton
+{
+public:
+    AlgorithmButton();
+    void setMode (int displayPosition, juce::String name);
+    void paintButton (juce::Graphics&, bool, bool) override;
+
+private:
+    int number = 1;
+    juce::String modeName { "SOFT CLIP" };
+};
+
+class HeaderActionButton : public juce::TextButton
+{
+public:
+    HeaderActionButton (juce::String label, juce::String value);
+    void setValueText (juce::String value);
+    void paintButton (juce::Graphics&, bool, bool) override;
+
+private:
+    juce::String headerLabel;
+    juce::String valueText;
+};
+
+class SmartGainButton final : public HeaderActionButton
 {
 public:
     SmartGainButton();
@@ -117,6 +174,20 @@ public:
 private:
     float loadingProgress = 0.0f;
     bool loading = false;
+};
+
+class StripButton final : public juce::TextButton
+{
+public:
+    explicit StripButton (juce::String text);
+    void paintButton (juce::Graphics&, bool, bool) override;
+};
+
+class RtaBandButton final : public juce::TextButton
+{
+public:
+    explicit RtaBandButton (juce::String text);
+    void paintButton (juce::Graphics&, bool, bool) override;
 };
 
 class VerticalTextButton final : public juce::TextButton
@@ -160,6 +231,19 @@ private:
     bool visualizationValid = false;
 };
 
+class LevelMeterPanel final : public juce::Component,
+                              private juce::Timer
+{
+public:
+    explicit LevelMeterPanel (DefaultDistortionAudioProcessor&);
+    ~LevelMeterPanel() override;
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override;
+    DefaultDistortionAudioProcessor& processor;
+};
+
 class BandTrimControl final : public ResettableSlider
 {
 public:
@@ -192,8 +276,13 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
 
 private:
-    static constexpr int fftOrder = 12;
-    static constexpr int fftSize = 1 << fftOrder;
+    static constexpr int fftSize = SpectrumFIFO::fftSize;
+    static constexpr int spectrumPublishHop = SpectrumFIFO::publishHop;
+    static constexpr float analyzerFloorDb = -80.0f;
+    static constexpr float analyzerCeilingDb = 0.0f;
+    static constexpr float analyzerAveragingSeconds = 0.065f;
+    static constexpr float analyzerDecayDb = 1.5f;
+    static constexpr float analyzerTiltDbPerOctave = 4.5f;
     void timerCallback() override;
     void updateSpectrum();
     void updateControls();
@@ -202,6 +291,8 @@ private:
     [[nodiscard]] float frequencyToX (float frequency) const;
     [[nodiscard]] float xToFrequency (float x) const;
     [[nodiscard]] juce::Rectangle<float> slopeBadgeBounds (int crossover) const;
+    [[nodiscard]] juce::Rectangle<float> frequencyTooltipBounds (
+        int crossover) const;
     [[nodiscard]] int crossoverAt (juce::Point<float>, bool badgeOnly) const;
     [[nodiscard]] int crossoverForResetAt (juce::Point<float>) const;
     [[nodiscard]] int bandAt (float x) const;
@@ -211,6 +302,9 @@ private:
     [[nodiscard]] int trimAt (juce::Point<float>) const;
     void resetTrim (int band);
     void resetCrossover (int crossover);
+    void writeBandParameters (int band, const BandParameters&);
+    void insertCrossover (int band, float frequency);
+    void removeCrossover (int crossover);
     void bindTrimControl (int band);
     void beginTrimDrag (int band, float y);
     void updateTrimDrag (float y);
@@ -219,24 +313,17 @@ private:
     void showSlopeMenu (int crossover);
 
     DefaultDistortionAudioProcessor& processor;
-    juce::dsp::FFT fft { fftOrder };
-    juce::dsp::WindowingFunction<float> window {
-        fftSize, juce::dsp::WindowingFunction<float>::hann, true
-    };
-    std::array<float, fftSize> inputHistory {};
-    std::array<float, fftSize> outputHistory {};
-    std::array<float, fftSize * 2> inputFft {};
-    std::array<float, fftSize * 2> outputFft {};
     std::array<float, fftSize / 2> inputSpectrum {};
     std::array<float, fftSize / 2> outputSpectrum {};
-    std::array<float, 4096> incomingInput {};
-    std::array<float, 4096> incomingOutput {};
-    int historyPosition = 0;
+    std::array<float, fftSize / 2> incomingInput {};
+    std::array<float, fftSize / 2> incomingOutput {};
     int hoveredCrossover = -1;
     int draggedCrossover = -1;
     int hoveredTrimBand = -1;
+    float ghostCrossoverX = -1.0f;
     int draggedTrimBand = -1;
     int trimBoundBand = -1;
+    int laidOutBandCount = -1;
     juce::RangedAudioParameter* draggedTrimParameter = nullptr;
 
     juce::TextButton linkButton { "LINK" };
@@ -244,7 +331,16 @@ private:
     juce::TextButton phaseButton { "MIN PHASE" };
     juce::TextButton soloButton { "SOLO" };
     juce::TextButton bypassButton { "BYPASS" };
+    std::array<RtaBandButton, MultibandParameters::maximumBands> soloButtons {
+        RtaBandButton { "S" }, RtaBandButton { "S" },
+        RtaBandButton { "S" }, RtaBandButton { "S" }
+    };
+    std::array<RtaBandButton, MultibandParameters::maximumBands> bypassButtons {
+        RtaBandButton { "B" }, RtaBandButton { "B" },
+        RtaBandButton { "B" }, RtaBandButton { "B" }
+    };
     BandTrimControl trimControl;
+    std::unique_ptr<PrototypeSimpleMenuWindow> simpleMenu;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
         trimAttachment;
 };
@@ -259,6 +355,7 @@ public:
     ~DefaultDistortionAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
 
 private:
@@ -269,9 +366,12 @@ private:
     void timerCallback() override;
     void configureKnob (ParameterControl&);
     void showModeMenu();
+    void showQualityMenu();
+    void showPhaseMenu();
     void selectMode (int mode);
     void stepMode (int delta);
     void cycleAutoGain();
+    void cycleRoute();
     void updateAutoGainButton (int mode);
     void updateCharacterControl (int mode);
     void rebindContextualControls();
@@ -286,26 +386,33 @@ private:
     GeometricLookAndFeel lookAndFeel;
 
     BrandButton brandLabel;
-    juce::TextButton modeButton;
+    AlgorithmButton modeButton;
     TriangleButton previousModeButton { false };
     TriangleButton nextModeButton { true };
     SmartGainButton autoGainButton;
-    juce::TextButton pluginPowerButton { "ON" };
-    juce::TextButton multibandButton { "MULTIBAND" };
+    HeaderActionButton qualityButton { "OS", "OFF" };
+    HeaderActionButton pluginPowerButton { "POWER", "ON" };
+    StripButton multibandButton { "MULTIBAND  ON" };
+    HeaderActionButton routeButton { "ROUTE", "M/S" };
+    StripButton linkStripButton { "LINK" };
+    StripButton phaseStripButton { "PHASE  MINIMUM" };
     VerticalTextButton asymStereoButton;
-    VerticalTextSlider secondarySlider {
-        "SECONDARY", "S E C O N D A R Y", 0.0
-    };
 
     ParameterControl drive { "DRIVE" };
     ParameterControl character { "CURVE" };
+    ParameterControl secondary { "SECONDARY" };
     ParameterControl asym { "ASYM" };
     ParameterControl tone { "TONE" };
     ParameterControl stages { "STAGES" };
+    ParameterControl placement { "PLACEMENT" };
+    ParameterControl dynamic { "DYNAMIC" };
+    ParameterControl speed { "SPEED" };
+    ParameterControl inputHp { "INPUT HP" };
+    ParameterControl outputLp { "OUTPUT LP" };
     ParameterControl mix { "MIX" };
-    ParameterControl output { "OUTPUT" };
-    ParameterControl quality { "OVERSAMPLING" };
+    ParameterControl output { "OUT" };
     ResponseDisplay responseDisplay;
+    LevelMeterPanel levelMeters;
     MultibandPanel multibandPanel;
 
     std::unique_ptr<SliderAttachment> driveAttachment;
@@ -316,12 +423,20 @@ private:
     std::unique_ptr<SliderAttachment> stagesAttachment;
     std::unique_ptr<SliderAttachment> mixAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
-    std::unique_ptr<SliderAttachment> qualityAttachment;
+    std::unique_ptr<SliderAttachment> placementAttachment;
+    std::unique_ptr<SliderAttachment> dynamicAttachment;
+    std::unique_ptr<SliderAttachment> speedAttachment;
+    std::unique_ptr<SliderAttachment> inputHpAttachment;
+    std::unique_ptr<SliderAttachment> outputLpAttachment;
     std::unique_ptr<juce::ParameterAttachment> modeAttachment;
     std::unique_ptr<juce::ParameterAttachment> autoGainAttachment;
     std::unique_ptr<juce::ParameterAttachment> characterAttachment;
+    std::unique_ptr<juce::ParameterAttachment> routeAttachment;
+    std::unique_ptr<juce::ParameterAttachment> qualityAttachment;
     std::unique_ptr<ButtonAttachment> multibandAttachment;
     std::unique_ptr<ButtonAttachment> pluginPowerAttachment;
+    std::unique_ptr<PrototypeSimpleMenuWindow> simpleMenu;
+    std::unique_ptr<PrototypeModeMenuWindow> modeMenu;
 
     int displayedMode = -1;
     int displayedAutoGainMode = -1;
@@ -336,8 +451,6 @@ private:
                    MultibandParameters::maximumBands> parameters {};
     } bandGroupDrag;
     bool multibandVisible = false;
-    juce::Random brandRandom;
-    double nextBrandGlitchTimeMs = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (
         DefaultDistortionAudioProcessorEditor)

@@ -512,7 +512,7 @@ juce::String DistortionEngine::formatCharacterValue (int mode,
         if (frequency >= 1000.0f)
             return juce::String (
                 frequency / 1000.0f,
-                frequency >= 10000.0f ? 1 : 2) + " kHz";
+                frequency >= 10000.0f ? 0 : 1) + " kHz";
         return juce::String (
             frequency,
             frequency >= 100.0f ? 0 : 1) + " Hz";

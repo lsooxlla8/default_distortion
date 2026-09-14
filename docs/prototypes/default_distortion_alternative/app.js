@@ -16,7 +16,7 @@
     { name: "DIODE", character: "TOPOLOGY" },
     { name: "TRIODE", character: "BIAS", bipolar: true },
     { name: "TRANSISTOR", character: "GATE", bipolar: true },
-    { name: "TAPE", character: "HYST", secondary: "BIAS", secondaryDefault: 0.5, defaultCharacter: 0.5, time: true },
+    { name: "TAPE", character: "HYSTERESIS", secondary: "BIAS", secondaryDefault: 0.5, defaultCharacter: 0.5, time: true },
     { name: "ODD / EVEN", character: "ODD/EVEN", bipolar: true },
     { name: "PHASE DISTORTION", character: "TONE", defaultCharacter: 0.5, time: true },
     { name: "SPECTRAL CLIP", character: "KNEE", time: true },
@@ -48,7 +48,7 @@
   const SLOPES = [6, 12, 24, 36, 48];
   const CONTEXT_KEYS = [
     "mode", "drive", "character", "secondary", "asym", "asymStereo",
-    "placementMode", "placement", "react", "speed", "tone", "stages", "mix"
+    "placementMode", "placement", "dynamic", "speed", "inputHp", "tone", "stages", "outputLp", "mix"
   ];
   const $ = (id) => document.getElementById(id);
   const plugin = $("plugin");
@@ -76,10 +76,12 @@
       asymStereo: false,
       placementMode: 0,
       placement: 0,
-      react: 0,
+      dynamic: 0,
       speed: 50,
+      inputHp: 20,
       tone: 0,
       stages: 1,
+      outputLp: 20000,
       mix: 1
     };
   }
@@ -216,8 +218,12 @@
     if (key === "stages") return Math.round(value) + " STAGE";
     if (key === "mix") return Math.round(value * 100) + "%";
     if (key === "placement") return Math.round(value) + "%";
-    if (key === "react") return (value > 0 ? "+" : "") + Math.round(value) + "%";
+    if (key === "dynamic") return (value > 0 ? "+" : "") + Math.round(value) + "%";
     if (key === "speed") return Math.round(value) + "%";
+    if (key === "inputHp" || key === "outputLp") {
+      if ((key === "inputHp" && value <= 20) || (key === "outputLp" && value >= 20000)) return "OFF";
+      return value >= 1000 ? clean(value / 1000, value >= 10000 ? 1 : 2) + " kHz" : Math.round(value) + " Hz";
+    }
     if (key === "output" || key === "trim") return clean(value, 1) + " dB";
     return String(value);
   }
@@ -232,6 +238,10 @@
   }
 
   function parseEditedValue(key, text) {
+    if (key === "inputHp" || key === "outputLp") {
+      const parsedFrequency = parseCrossoverFrequency(text);
+      return Number.isFinite(parsedFrequency) ? parsedFrequency : getValue(key);
+    }
     const parsed = Number.parseFloat(String(text).replace(",", "."));
     if (!Number.isFinite(parsed)) return getValue(key);
     if (key === "character" || key === "secondary" || key === "asym" || key === "tone" || key === "mix") {
@@ -249,8 +259,9 @@
     if (key === "stages") return { min: 1, max: 8, step: 1 };
     if (key === "mix") return { min: 0, max: 1, step: 0.001 };
     if (key === "placement") return { min: -100, max: 100, step: 0.1 };
-    if (key === "react") return { min: -100, max: 100, step: 0.1 };
+    if (key === "dynamic") return { min: -100, max: 100, step: 0.1 };
     if (key === "speed") return { min: 0, max: 100, step: 0.1 };
+    if (key === "inputHp" || key === "outputLp") return { min: 20, max: 20000, step: 1, logarithmic: true };
     if (key === "output") return { min: -24, max: 12, step: 0.01 };
     if (key === "trim") return { min: -12, max: 12, step: 0.01 };
     return { min: 0, max: 1, step: 0.001 };
@@ -296,7 +307,7 @@
       startY = event.clientY;
       startValue = getValue(key);
       const groupable = [
-        "drive", "character", "secondary", "asym", "placement", "react", "speed", "tone", "stages", "mix"
+        "drive", "character", "secondary", "asym", "placement", "dynamic", "speed", "inputHp", "tone", "stages", "outputLp", "mix"
       ].includes(key);
       groupStarts = event.shiftKey && state.multiband && !state.linked && groupable
         ? state.bands.map((band) => band.saturation[key])
@@ -309,12 +320,23 @@
       const range = rangeFor(key);
       const fine = groupStarts ? 1 : event.shiftKey ? 0.2 : 1;
       const dragDistance = key === "placement" ? 120 : 160;
-      const raw = startValue - ((event.clientY - startY) / dragDistance) * (range.max - range.min) * fine;
+      const deltaRatio = ((event.clientY - startY) / dragDistance) * fine;
+      const raw = range.logarithmic
+        ? Math.exp(
+          Math.log(range.min)
+          + clamp(
+            (Math.log(startValue) - Math.log(range.min)) / (Math.log(range.max) - Math.log(range.min)) - deltaRatio,
+            0,
+            1
+          ) * (Math.log(range.max) - Math.log(range.min))
+        )
+        : startValue - deltaRatio * (range.max - range.min);
       const next = snap(raw, range);
       if (groupStarts) {
         const delta = next - startValue;
+        const factor = range.logarithmic ? next / startValue : 1;
         state.bands.forEach((band, index) => {
-          band.saturation[key] = snap(groupStarts[index] + delta, range);
+          band.saturation[key] = snap(range.logarithmic ? groupStarts[index] * factor : groupStarts[index] + delta, range);
         });
         renderAll();
       } else {
@@ -543,7 +565,7 @@
     const bottom = RESPONSE_H - 10;
     const centre = 0.5 * (top + bottom);
     const amplitude = 0.43 * (bottom - top);
-    const reactRange = clamp(params.react, -100, 100) / 100 * 36;
+    const dynamicRange = clamp(params.dynamic, -100, 100) / 100 * 36;
     const speed = clamp(params.speed, 0, 100) / 100;
     const attack = 0.04 + 0.92 * Math.pow(speed, 1.5);
     const release = 0.015 + 0.42 * Math.pow(speed, 1.5);
@@ -557,9 +579,9 @@
       else source = -1 + 2 * t;
       const targetEnvelope = Math.abs(source);
       envelope += (targetEnvelope - envelope) * (targetEnvelope > envelope ? attack : release);
-      const effectiveParams = reactRange === 0
+      const effectiveParams = dynamicRange === 0
         ? params
-        : { ...params, drive: clamp(params.drive + envelope * reactRange, 0, 36) };
+        : { ...params, drive: clamp(params.drive + envelope * dynamicRange, 0, 36) };
       let processed = representativeTransfer(source, params.mode, effectiveParams);
       if (descriptor.time) {
         if (params.mode === 21) processed = representativeTransfer(Math.sin(Math.PI * 6 * Math.round(t * 28) / 28), params.mode, effectiveParams);
@@ -904,12 +926,14 @@
     $("secondaryLabel").textContent = descriptor.secondary || "DETAIL";
     $("secondaryField").classList.toggle("is-unavailable", !descriptor.secondary);
 
-    ["drive", "character", "secondary", "asym", "placement", "react", "speed", "tone", "stages", "mix", "output"].forEach((key) => {
+    ["drive", "character", "secondary", "asym", "placement", "dynamic", "speed", "inputHp", "tone", "stages", "outputLp", "mix", "output"].forEach((key) => {
       const input = $(key + "Value");
       if (input && !input.classList.contains("is-editing")) input.value = formatValue(key);
       const field = document.querySelector(`.value-field[data-key="${key}"]`);
       const range = rangeFor(key);
-      const ratio = (getValue(key) - range.min) / Math.max(1e-9, range.max - range.min);
+      const ratio = range.logarithmic
+        ? (Math.log(getValue(key)) - Math.log(range.min)) / (Math.log(range.max) - Math.log(range.min))
+        : (getValue(key) - range.min) / Math.max(1e-9, range.max - range.min);
       field?.style.setProperty("--value-ratio", String(clamp(ratio, 0, 1)));
       if (key === "stages" && field) {
         const activeStages = Math.round(getValue(key));

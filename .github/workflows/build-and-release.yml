@@ -52,7 +52,8 @@ jobs:
             libxi-dev \
             libglu1-mesa-dev \
             mesa-common-dev \
-            libegl-dev
+            libegl-dev \
+            xvfb
 
       - name: Configure macOS universal
         if: runner.os == 'macOS'
@@ -95,6 +96,26 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Render UI matrix on macOS
+        if: runner.os == 'macOS'
+        run: >
+          build/DefaultDistortionScreenshot_artefacts/Release/DefaultDistortionScreenshot
+          build/ui-captures
+
+      - name: Render UI matrix on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          build/DefaultDistortionScreenshot_artefacts/Release/DefaultDistortionScreenshot.exe
+          build/ui-captures
+
+      - name: Render UI matrix on Linux
+        if: runner.os == 'Linux'
+        run: >
+          xvfb-run -a
+          build/DefaultDistortionScreenshot_artefacts/Release/DefaultDistortionScreenshot
+          build/ui-captures
 
       - name: Package macOS
         if: runner.os == 'macOS'
@@ -180,6 +201,7 @@ jobs:
           path: |
             packages/*.zip
             packages/*.tar.gz
+            build/ui-captures/*.png
           if-no-files-found: error
 
   release:
