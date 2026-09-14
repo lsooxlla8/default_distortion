@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#050505">
+    <title>default_distortion — alternative split-layout prototype</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="prototype-page">
+      <section class="plugin-shell is-expanded" id="plugin" aria-label="Interactive alternative default_distortion prototype">
+        <header class="plugin-header">
+          <button class="wordmark" id="themeToggle" type="button" aria-label="Toggle paper and ink theme">
+            default_distortion
+          </button>
+
+          <div class="algorithm-cell" id="algorithmCell">
+            <button class="mode-step" id="previousMode" type="button" aria-label="Previous distortion mode">◀</button>
+            <button class="algorithm-picker" id="algorithmPicker" type="button" aria-haspopup="listbox">
+              <span id="modeNumber">10</span>
+              <strong id="modeName">SINE EROSION</strong>
+            </button>
+            <button class="mode-step" id="nextMode" type="button" aria-label="Next distortion mode">▶</button>
+          </div>
+
+          <button class="header-action" id="qualityPicker" type="button" aria-haspopup="listbox">
+            <span>OS</span>
+            <strong id="qualityValue">OFF</strong>
+          </button>
+
+          <button class="header-action is-active" id="autoGain" type="button">
+            <span>AUTO GAIN</span>
+            <strong id="autoGainValue">REGULAR</strong>
+          </button>
+
+          <button class="header-action power is-active" id="power" type="button">
+            <span>POWER</span>
+            <strong id="powerValue">ON</strong>
+          </button>
+        </header>
+
+        <section class="main-workspace" aria-label="Distortion controls and response">
+          <section class="control-panel" aria-label="Distortion parameters">
+            <div class="control-row control-row-primary">
+              <label class="value-field" data-key="drive">
+                <span>DRIVE</span>
+                <input id="driveValue" class="value-input" type="text" readonly aria-label="Drive">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <label class="value-field" data-key="character">
+                <span id="characterLabel">FREQUENCY</span>
+                <input id="characterValue" class="value-input" type="text" readonly aria-label="Character">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <label class="value-field secondary-field" id="secondaryField" data-key="secondary">
+                <span id="secondaryLabel">NOISE</span>
+                <input id="secondaryValue" class="value-input" type="text" readonly aria-label="Detail">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <div class="value-field asym-field" data-key="asym">
+                <span>ASYM</span>
+                <input id="asymValue" class="value-input" type="text" readonly aria-label="Asymmetry">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+                <button class="stereo-toggle" id="asymStereo" type="button" aria-label="Stereo asymmetry">STEREO</button>
+              </div>
+            </div>
+
+            <div class="routing-row">
+              <button class="route-mode" id="routeMode" type="button" aria-label="Toggle placement domain">
+                <span>ROUTE</span>
+                <strong id="routeModeValue">M/S</strong>
+              </button>
+
+              <label class="placement-field value-field" data-key="placement">
+                <span id="placementLabel">CENTER</span>
+                <input id="placementValue" class="value-input" type="text" readonly aria-label="Placement">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <label class="value-field" data-key="dynamic">
+                <span>DYNAMIC</span>
+                <input id="dynamicValue" class="value-input" type="text" readonly aria-label="Dynamic Drive modulation depth">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <label class="value-field" data-key="speed">
+                <span>SPEED</span>
+                <input id="speedValue" class="value-input" type="text" readonly aria-label="Envelope speed">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+            </div>
+
+            <div class="control-row control-row-secondary">
+              <label class="value-field" data-key="inputHp">
+                <span>INPUT HP</span>
+                <input id="inputHpValue" class="value-input" type="text" readonly aria-label="Input high-pass frequency">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <label class="value-field" data-key="tone">
+                <span>TONE</span>
+                <input id="toneValue" class="value-input" type="text" readonly aria-label="Tone">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+
+              <label class="value-field stages-field" data-key="stages">
+                <span>STAGES</span>
+                <input id="stagesValue" class="value-input" type="text" readonly aria-label="Stages">
+                <i class="stage-visual" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></i>
+              </label>
+
+              <label class="value-field" data-key="outputLp">
+                <span>OUTPUT LP</span>
+                <input id="outputLpValue" class="value-input" type="text" readonly aria-label="Output low-pass frequency">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+              </label>
+            </div>
+          </section>
+
+          <section class="meter-panel" aria-label="Input and output levels">
+            <div class="level-meter input">
+              <div class="level-meter-pair">
+                <div class="level-meter-rail"><i class="level-meter-fill"></i></div>
+                <div class="level-meter-rail"><i class="level-meter-fill"></i></div>
+              </div>
+              <span>IN</span>
+            </div>
+            <div class="level-meter output">
+              <div class="level-meter-pair">
+                <div class="level-meter-rail"><i class="level-meter-fill"></i></div>
+                <div class="level-meter-rail"><i class="level-meter-fill"></i></div>
+              </div>
+              <span>OUT</span>
+            </div>
+          </section>
+
+          <section class="response-panel" aria-label="Distortion response">
+            <svg id="responseGraph" viewBox="0 0 180 182" preserveAspectRatio="none">
+              <g id="responseGrid"></g>
+              <path class="response-input" id="responseInput"></path>
+              <path class="response-output" id="responseOutput"></path>
+              <g id="responseMeters"></g>
+            </svg>
+          </section>
+        </section>
+
+        <section class="multiband-strip" aria-label="Multiband mode">
+          <button class="multiband-toggle is-active" id="multiband" type="button">
+            <span>MULTIBAND</span>
+            <strong id="multibandValue">ON</strong>
+          </button>
+          <button class="multiband-link is-active" id="linkBands" type="button">LINK</button>
+          <button class="multiband-phase" id="phasePicker" type="button" aria-haspopup="listbox">
+            <span>PHASE</span>
+            <strong id="phaseValue">MINIMUM</strong>
+          </button>
+          <label class="strip-parameter value-field" data-key="mix">
+            <span>MIX</span>
+            <input id="mixValue" class="value-input" type="text" readonly aria-label="Mix">
+          </label>
+          <label class="strip-parameter value-field" data-key="output">
+            <span>OUT</span>
+            <input id="outputValue" class="value-input" type="text" readonly aria-label="Output">
+          </label>
+        </section>
+
+        <section class="multiband-panel" id="multibandPanel" aria-label="Multiband controls">
+          <section class="rta-panel" aria-label="Multiband analyzer and crossovers">
+            <svg id="rtaGraph" viewBox="0 0 640 160" preserveAspectRatio="none"></svg>
+            <output class="rta-tooltip" id="rtaTooltip" hidden></output>
+          </section>
+        </section>
+
+        <!-- [html-validate-disable-next prefer-native-element] -->
+        <div class="select-menu" id="selectMenu" role="listbox" hidden></div>
+      </section>
+    </main>
+  </body>
+</html>

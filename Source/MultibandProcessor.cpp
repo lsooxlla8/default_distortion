@@ -853,9 +853,22 @@ std::uint64_t hashParameters (const Parameters& master,
         add (std::bit_cast<std::uint32_t> (values.saturation.character));
         add (std::bit_cast<std::uint32_t> (values.saturation.secondary));
         add (std::bit_cast<std::uint32_t> (values.saturation.asymmetry));
+        add (static_cast<std::uint32_t> (
+            values.saturation.asymmetryStereo));
         add (std::bit_cast<std::uint32_t> (values.saturation.tone));
         add (static_cast<std::uint32_t> (values.saturation.stages));
         add (std::bit_cast<std::uint32_t> (values.saturation.mix));
+        add (static_cast<std::uint32_t> (values.saturation.route));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.placementPercent));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.dynamicPercent));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.speedPercent));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.inputHpHz));
+        add (std::bit_cast<std::uint32_t> (
+            values.saturation.outputLpHz));
         add (static_cast<std::uint32_t> (values.bypass));
         add (std::bit_cast<std::uint32_t> (values.trimDb));
     }
@@ -887,6 +900,8 @@ struct MultibandProcessor::Impl
     int maximumBlockSize = 512;
     int channels = 2;
     int bandLatency = 0;
+    int routingLatency = 0;
+    int maximumRoutingLatency = 0;
     MinimumPhaseRouter minimumBank;
     LinearPhaseBank linearBank;
     std::array<DistortionEngine, maximumBands> engines;
@@ -956,11 +971,14 @@ struct MultibandProcessor::Impl
         for (auto& engine : engines)
             engine.prepare (sampleRate, maximumBlockSize, channels);
         bandLatency = engines.front().getLatencySamples();
+        maximumRoutingLatency = engines.front().getMaximumLatencySamples()
+            - bandLatency;
         for (auto& band : bands)
             band.setSize (channels, maximumBlockSize, false, false, true);
         dryReference.setSize (channels, maximumBlockSize, false, false, true);
         dryDelay.prepare (
-            bandLatency + linearBank.groupDelay + maximumBlockSize * 2 + 16);
+            bandLatency + maximumRoutingLatency + linearBank.groupDelay
+                + maximumBlockSize * 2 + 16);
         prepareWeighting();
         smartGain.reset (sampleRate, 0.02);
         smartGain.setCurrentAndTargetValue (1.0f);
@@ -973,6 +991,7 @@ struct MultibandProcessor::Impl
         linearBank.reset();
         for (auto& engine : engines)
             engine.reset();
+        routingLatency = 0;
         dryDelay.reset();
         lastSignature = 0;
         wasSmart = false;
@@ -1070,11 +1089,25 @@ struct MultibandProcessor::Impl
     void process (juce::AudioBuffer<float>& buffer,
                   const Parameters& master,
                   const MultibandParameters& multiband,
-                  int soloBand)
+                  int soloBand,
+                  const juce::AudioBuffer<float>* detectorInput)
     {
         const auto activeBands = juce::jlimit (2, maximumBands, multiband.bandCount);
         const auto samples = buffer.getNumSamples();
         const auto activeChannels = buffer.getNumChannels();
+        routingLatency = 0;
+        for (int band = 0; band < activeBands; ++band)
+        {
+            const auto& saturation = multiband.linked
+                ? master
+                : multiband.bands[static_cast<size_t> (band)].saturation;
+            if (saturation.route == 1
+                && std::abs (saturation.placementPercent) >= 1.0e-7f)
+            {
+                routingLatency = maximumRoutingLatency;
+                break;
+            }
+        }
         auto preserveDualMono = activeChannels == 2;
         if (preserveDualMono)
         {
@@ -1109,6 +1142,8 @@ struct MultibandProcessor::Impl
                 multiband.crossoverHz, multiband.crossoverSlope);
 
         buffer.clear();
+        const float* sharedDynamicOffsets = nullptr;
+        auto sharedDynamicSamples = -1;
         for (int band = 0; band < activeBands; ++band)
         {
             const auto index = static_cast<size_t> (band);
@@ -1128,7 +1163,28 @@ struct MultibandProcessor::Impl
                 values.saturation.mix = 0.0f;
                 values.saturation.autoGainMode = 0;
             }
-            engines[index].processBand (bands[index], values.saturation);
+            engines[index].processBand (
+                bands[index],
+                values.saturation,
+                detectorInput,
+                routingLatency > 0,
+                sharedDynamicOffsets,
+                sharedDynamicSamples);
+            if (multiband.linked)
+            {
+                if (band == 0)
+                {
+                    sharedDynamicOffsets = engines.front()
+                        .getDynamicDriveOffsets();
+                    sharedDynamicSamples = engines.front()
+                        .getDynamicDriveSampleCount();
+                }
+                else
+                {
+                    engines[index].synchroniseDynamicStateFrom (
+                        engines.front());
+                }
+            }
             if (soloBand < 0 || soloBand == band)
                 for (int channel = 0; channel < activeChannels; ++channel)
                     buffer.addFrom (channel, 0, bands[index], channel, 0, samples);
@@ -1141,7 +1197,7 @@ struct MultibandProcessor::Impl
         if (preserveDualMono)
             buffer.copyFrom (1, 0, buffer, 0, 0, samples);
 
-        const auto totalLatency = bandLatency
+        const auto totalLatency = bandLatency + routingLatency
             + (multiband.phaseMode == 0 ? 0 : linearBank.groupDelay);
         for (int channel = 0; channel < activeChannels; ++channel)
             for (int sample = 0; sample < samples; ++sample)
@@ -1190,14 +1246,28 @@ void MultibandProcessor::reset()
 void MultibandProcessor::process (juce::AudioBuffer<float>& buffer,
                                   const Parameters& master,
                                   const MultibandParameters& multiband,
-                                  int soloBand)
+                                  int soloBand,
+                                  const juce::AudioBuffer<float>* detectorInput)
 {
-    impl->process (buffer, master, multiband, soloBand);
+    impl->process (buffer, master, multiband, soloBand, detectorInput);
 }
 
 int MultibandProcessor::getLatencySamples (bool linearPhase) const noexcept
 {
-    return impl->bandLatency + (linearPhase ? impl->linearBank.groupDelay : 0);
+    return impl->bandLatency + impl->routingLatency
+        + (linearPhase ? impl->linearBank.groupDelay : 0);
+}
+
+int MultibandProcessor::getMaximumLatencySamples (bool linearPhase) const noexcept
+{
+    return impl->bandLatency + impl->maximumRoutingLatency
+        + (linearPhase ? impl->linearBank.groupDelay : 0);
+}
+
+int MultibandProcessor::getBaseLatencySamples (bool linearPhase) const noexcept
+{
+    return impl->bandLatency
+        + (linearPhase ? impl->linearBank.groupDelay : 0);
 }
 
 float MultibandProcessor::getSmartAutoGainProgress() const noexcept

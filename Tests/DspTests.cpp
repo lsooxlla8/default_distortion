@@ -1,17 +1,61 @@
 #include "../Source/DistortionEngine.h"
 #include "../Source/GlobalBypass.h"
 #include "../Source/MultibandProcessor.h"
+#include "../Source/SpectrumFIFO.h"
 
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <iomanip>
 #include <limits>
+#include <new>
 #include <set>
 #include <vector>
+
+namespace allocation_probe
+{
+thread_local bool enabled = false;
+thread_local size_t count = 0;
+}
+
+void* operator new (std::size_t size)
+{
+    if (allocation_probe::enabled)
+        ++allocation_probe::count;
+    if (auto* memory = std::malloc (size))
+        return memory;
+    throw std::bad_alloc {};
+}
+
+void* operator new[] (std::size_t size)
+{
+    return ::operator new (size);
+}
+
+void operator delete (void* memory) noexcept
+{
+    std::free (memory);
+}
+
+void operator delete[] (void* memory) noexcept
+{
+    std::free (memory);
+}
+
+void operator delete (void* memory, std::size_t) noexcept
+{
+    std::free (memory);
+}
+
+void operator delete[] (void* memory, std::size_t) noexcept
+{
+    std::free (memory);
+}
 
 #if JUCE_MAC
 #include <pthread.h>
@@ -243,6 +287,30 @@ void testMultibandCrossoversAndSmartGain (TestContext& context)
         processor.isSmartAutoGainLocked()
             && processor.getSmartAutoGainProgress() >= 0.999f,
         "Multiband Smart Auto Gain did not lock on the summed signal");
+    multiband.bands[0].saturation.route = 1;
+    fillSignal (buffer, phase);
+    processor.process (buffer, master, multiband, -1);
+    context.expect (
+        ! processor.isSmartAutoGainLocked()
+            && processor.getSmartAutoGainProgress() < 0.999f,
+        "Unlinked band ROUTE does not restart multiband Smart Auto Gain");
+    for (int block = 0; block < 220; ++block)
+    {
+        fillSignal (buffer, phase);
+        processor.process (buffer, master, multiband, -1);
+    }
+    context.expect (
+        processor.isSmartAutoGainLocked(),
+        "Multiband Smart Auto Gain did not relock after ROUTE changed");
+    multiband.bands[0].saturation.placementPercent = 100.0f;
+    fillSignal (buffer, phase);
+    processor.process (buffer, master, multiband, -1);
+    context.expect (
+        ! processor.isSmartAutoGainLocked()
+            && processor.getSmartAutoGainProgress() < 0.999f,
+        "Unlinked band PLACEMENT does not restart multiband Smart Auto Gain");
+    multiband.bands[0].saturation.route = 0;
+    multiband.bands[0].saturation.placementPercent = 0.0f;
 
     dd::MultibandProcessor linear;
     linear.prepare (sampleRate, 256, 2);
@@ -537,6 +605,95 @@ void dumpRegressionFingerprints()
         }
         std::cout << mode << ' ' << energy << ' ' << sum << ' '
                   << weighted << '\n';
+    }
+}
+
+void dumpVisualizationFingerprints()
+{
+    std::cout << std::setprecision (17);
+    for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
+    {
+        dd::Parameters parameters;
+        parameters.mode = mode;
+        parameters.driveDb = 17.37f;
+        parameters.character = dd::DistortionEngine::isCharacterBipolar (mode)
+            ? 0.31f : 0.413f;
+        parameters.asymmetry = 0.19f;
+        parameters.tone = 0.23f;
+        parameters.stages = 3;
+        dd::DistortionEngine::Visualization visualization;
+        dd::DistortionEngine::makeVisualization (
+            parameters, sampleRate, visualization);
+        double energy = 0.0;
+        double weighted = 0.0;
+        for (size_t point = 0; point < visualization.output.size(); ++point)
+        {
+            const auto value = static_cast<double> (visualization.output[point]);
+            energy += value * value;
+            weighted += value * static_cast<double> (1 + point % 37);
+        }
+        std::cout << mode << ' ' << visualization.spectralDomain << ' '
+                  << energy << ' ' << weighted << '\n';
+    }
+}
+
+void testVersionEightVisualizationSnapshots (TestContext& context)
+{
+    constexpr std::array<double, dd::DistortionEngine::modeCount> energies {
+        299.95919102551096, 175.96068699146173, 257.14013753935961,
+        92.877648481528226, 93.312763517585481, 8.1781553312368391,
+        94.238846132342957, 49.416243454242938, 47.385367130275164,
+        177.89142776983522, 172.75460439632241, 109.35201716808001,
+        622859.02413216059, 211.83531114730727, 167.18625657876964,
+        167.86993261543182, 17.774857203110066, 20.775564491450552,
+        31.078447042118345, 96.41429509190678, 24.912767365357045,
+        11.598975625980183, 93.106616009136118, 6.4476106679569565,
+        80.290416098524275, 0.38027489355339378, 172.94506534804566,
+        165.3278794563862, 101.82736555986678, 87.760863107682297
+    };
+    constexpr std::array<double, dd::DistortionEngine::modeCount> weighted {
+        281.55117690563202, 224.36887747049332, 281.66199898719788,
+        1841.1023117722943, 1463.4076444804668, -62.038499512062117,
+        1089.2627401510254, -645.42350653842175, -101.96342594490852,
+        89.327598989009857, 225.99558597360738, 1409.4485324576963,
+        188582.23256824291, 100.65764954686165, 2707.1385645605624,
+        1268.4999257484451, -152.86343750543892, -155.33020150495577,
+        280.828044076683, 922.73985170945525, -45.272050202242099,
+        594.54099584720097, 673.98215615749359, 33.21148837916553,
+        309.50201855413616, 151.28550757281482, 93.918638050556183,
+        -19.383059173822403, 1839.946959676221, 280.13748859310749
+    };
+    const auto near = [] (double actual, double expected)
+    {
+        return std::abs (actual - expected)
+            <= 1.0e-5 * juce::jmax (1.0, std::abs (expected));
+    };
+    for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
+    {
+        dd::Parameters parameters;
+        parameters.mode = mode;
+        parameters.driveDb = 17.37f;
+        parameters.character = dd::DistortionEngine::isCharacterBipolar (mode)
+            ? 0.31f : 0.413f;
+        parameters.asymmetry = 0.19f;
+        parameters.tone = 0.23f;
+        parameters.stages = 3;
+        dd::DistortionEngine::Visualization visualization;
+        dd::DistortionEngine::makeVisualization (
+            parameters, sampleRate, visualization);
+        double actualEnergy = 0.0;
+        double actualWeighted = 0.0;
+        for (size_t point = 0; point < visualization.output.size(); ++point)
+        {
+            const auto value = static_cast<double> (visualization.output[point]);
+            actualEnergy += value * value;
+            actualWeighted += value * static_cast<double> (1 + point % 37);
+        }
+        context.expect (
+            near (actualEnergy, energies[static_cast<size_t> (mode)])
+                && near (actualWeighted, weighted[static_cast<size_t> (mode)]),
+            "0.8 visualization snapshot changed for mode "
+                + juce::String (mode + 1));
     }
 }
 
@@ -2351,11 +2508,11 @@ void testRevisedAlgorithmContracts (TestContext& context)
     context.expect (
         dd::DistortionEngine::formatCharacterValue (
             static_cast<int> (dd::DistortionEngine::Mode::sineErosion),
-            0.5f).containsIgnoreCase ("1.00 kHz")
+            0.5f).containsIgnoreCase ("1.0 kHz")
             && dd::DistortionEngine::formatCharacterValue (
                 static_cast<int> (
                     dd::DistortionEngine::Mode::sineErosion),
-                1.0f).containsIgnoreCase ("10.0 kHz"),
+                1.0f).containsIgnoreCase ("10 kHz"),
         "Sine Erosion Frequency scale does not map 50% to 1 kHz and 100% to 10 kHz");
 
     parameters.character = 0.5f;
@@ -3105,6 +3262,833 @@ void testSharedSecondaryContract (TestContext& context)
                     static_cast<int> (control.first))) < 1.0e-6f,
                 control.second + " does not reset Shared Secondary to 0%");
 }
+
+void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
+{
+    constexpr int testSamples = 256;
+    const auto slow = dd::DistortionEngine::dynamicsTimingForSpeed (0.0f);
+    const auto medium = dd::DistortionEngine::dynamicsTimingForSpeed (50.0f);
+    const auto fast = dd::DistortionEngine::dynamicsTimingForSpeed (100.0f);
+    context.expect (
+        std::abs (slow.first - 100.0f) < 1.0e-6f
+            && std::abs (slow.second - 1000.0f) < 1.0e-6f
+            && std::abs (medium.first - 10.0f) < 1.0e-6f
+            && std::abs (medium.second - 100.0f) < 1.0e-6f
+            && std::abs (fast.first - 0.1f) < 1.0e-6f
+            && std::abs (fast.second - 15.0f) < 1.0e-6f,
+        "SPEED does not reproduce the approved default_eq timing anchors");
+    dd::Parameters neutral;
+    context.expect (neutral.route == 0, "0.9 Route default is not M/S");
+    context.expect (
+        neutral.placementPercent == 0.0f,
+        "0.9 Placement default is not neutral");
+    context.expect (
+        neutral.dynamicPercent == 0.0f,
+        "0.9 Dynamic default is not neutral");
+    context.expect (
+        neutral.speedPercent == 100.0f,
+        "0.9 Speed default is not 100%");
+    context.expect (
+        neutral.inputHpHz == 0.0f,
+        "0.9 Input HP default is not OFF");
+    context.expect (
+        neutral.outputLpHz == 20000.0f,
+        "0.9 Output LP default is not OFF");
+
+    dd::DistortionEngine reference;
+    dd::DistortionEngine withDetector;
+    reference.prepare (sampleRate, testSamples, 2);
+    withDetector.prepare (sampleRate, testSamples, 2);
+    juce::AudioBuffer<float> first (2, testSamples);
+    juce::AudioBuffer<float> second (2, testSamples);
+    juce::AudioBuffer<float> detector (2, testSamples);
+    double phase = 0.0;
+    for (int block = 0; block < 12; ++block)
+    {
+        fillSignal (first, phase);
+        second.makeCopyOf (first);
+        detector.makeCopyOf (first);
+        reference.process (first, neutral);
+        withDetector.process (second, neutral, &detector);
+        for (int channel = 0; channel < 2; ++channel)
+            for (int sample = 0; sample < testSamples; ++sample)
+                context.expect (
+                    std::bit_cast<std::uint32_t> (
+                        first.getSample (channel, sample))
+                        == std::bit_cast<std::uint32_t> (
+                            second.getSample (channel, sample)),
+                    "DYNAMIC=0 changes the neutral 0.8 signal path");
+    }
+
+    const auto measure = [] (dd::Parameters parameters,
+                             double frequency,
+                             float amplitude,
+                             const juce::AudioBuffer<float>* externalDetector,
+                             int autoGainMode = 0)
+    {
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, testSamples, 2);
+        parameters.autoGainMode = autoGainMode;
+        juce::AudioBuffer<float> audio (2, testSamples);
+        juce::AudioBuffer<float> localDetector (2, testSamples);
+        double oscillator = 0.0;
+        double energy = 0.0;
+        int count = 0;
+        for (int block = 0; block < 160; ++block)
+        {
+            for (int sample = 0; sample < testSamples; ++sample)
+            {
+                const auto value = amplitude * static_cast<float> (
+                    std::sin (oscillator));
+                oscillator += juce::MathConstants<double>::twoPi
+                    * frequency / sampleRate;
+                for (int channel = 0; channel < 2; ++channel)
+                {
+                    audio.setSample (channel, sample, value);
+                    localDetector.setSample (channel, sample, value);
+                }
+            }
+            engine.process (
+                audio,
+                parameters,
+                externalDetector != nullptr ? externalDetector : &localDetector);
+            if (block >= 120)
+                for (int channel = 0; channel < 2; ++channel)
+                    for (int sample = 0; sample < testSamples; ++sample)
+                    {
+                        const auto value = audio.getSample (channel, sample);
+                        energy += static_cast<double> (value) * value;
+                        ++count;
+                    }
+        }
+        return std::sqrt (energy / juce::jmax (1, count));
+    };
+
+    dd::Parameters dynamic;
+    dynamic.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::morphSoftClip);
+    dynamic.driveDb = 18.0f;
+    dynamic.mix = 1.0f;
+    dynamic.dynamicPercent = 100.0f;
+    const auto positive = measure (dynamic, 997.0, 0.7f, nullptr);
+    dynamic.dynamicPercent = -100.0f;
+    const auto negative = measure (dynamic, 997.0, 0.7f, nullptr);
+    context.expect (
+        positive > negative * 1.05,
+        "Positive Dynamic does not drive loud input harder than negative Dynamic");
+
+    auto compensatedDynamicParameters = dynamic;
+    compensatedDynamicParameters.driveDb = 6.0f;
+    auto staticDrive = compensatedDynamicParameters;
+    staticDrive.dynamicPercent = 0.0f;
+    const auto uncompensatedStatic = measure (
+        staticDrive, 997.0, 0.2f, nullptr, 0);
+    const auto uncompensatedDynamic = measure (
+        compensatedDynamicParameters, 997.0, 0.2f, nullptr, 0);
+    const auto regularStatic = measure (
+        staticDrive, 997.0, 0.2f, nullptr, 1);
+    const auto regularDynamic = measure (
+        compensatedDynamicParameters, 997.0, 0.2f, nullptr, 1);
+    const auto uncompensatedDeltaDb = std::abs (
+        juce::Decibels::gainToDecibels (
+            static_cast<float> (uncompensatedDynamic
+                / juce::jmax (1.0e-12, uncompensatedStatic))));
+    const auto regularDeltaDb = std::abs (
+        juce::Decibels::gainToDecibels (
+            static_cast<float> (regularDynamic
+                / juce::jmax (1.0e-12, regularStatic))));
+    context.expect (
+        regularDeltaDb < uncompensatedDeltaDb * 0.75f,
+        "Regular Auto Gain does not compensate Dynamic Drive (raw delta "
+            + juce::String (uncompensatedDeltaDb, 2)
+            + " dB, compensated delta " + juce::String (regularDeltaDb, 2)
+            + " dB)");
+
+    dd::Parameters filter;
+    filter.mix = 0.0f;
+    filter.inputHpHz = 200.0f;
+    const auto hpLow = measure (filter, 20.0, 0.2f, nullptr);
+    const auto hpCutoff = measure (filter, 200.0, 0.2f, nullptr);
+    const auto hpHigh = measure (filter, 2000.0, 0.2f, nullptr);
+    context.expect (
+        hpLow < hpHigh * 0.08,
+        "18 dB/oct Input HP does not reject low frequencies");
+    context.expect (
+        hpCutoff / hpHigh > 0.62 && hpCutoff / hpHigh < 0.80,
+        "Input HP is not approximately -3 dB at its Butterworth cutoff");
+
+    filter.inputHpHz = 0.0f;
+    filter.outputLpHz = 2000.0f;
+    const auto lpLow = measure (filter, 500.0, 0.2f, nullptr);
+    const auto lpCutoff = measure (filter, 2000.0, 0.2f, nullptr);
+    const auto lpHigh = measure (filter, 10000.0, 0.2f, nullptr);
+    context.expect (
+        lpHigh < lpLow * 0.08,
+        "18 dB/oct Output LP does not reject high frequencies");
+    context.expect (
+        lpCutoff / lpLow > 0.62 && lpCutoff / lpLow < 0.80,
+        "Output LP is not approximately -3 dB at its Butterworth cutoff");
+
+    dd::Parameters returning = dynamic;
+    returning.speedPercent = 100.0f;
+    dd::Parameters neutralDynamic = returning;
+    neutralDynamic.dynamicPercent = 0.0f;
+    dd::DistortionEngine returningEngine;
+    dd::DistortionEngine neutralEngine;
+    returningEngine.prepare (sampleRate, testSamples, 2);
+    neutralEngine.prepare (sampleRate, testSamples, 2);
+    juce::AudioBuffer<float> returningAudio (2, testSamples);
+    juce::AudioBuffer<float> neutralAudio (2, testSamples);
+    juce::AudioBuffer<float> loudDetector (2, testSamples);
+    juce::AudioBuffer<float> silentDetector (2, testSamples);
+    loudDetector.clear();
+    silentDetector.clear();
+    for (int channel = 0; channel < 2; ++channel)
+        juce::FloatVectorOperations::fill (
+            loudDetector.getWritePointer (channel), 1.0f, testSamples);
+    phase = 0.0;
+    auto returnError = 0.0f;
+    for (int block = 0; block < 180; ++block)
+    {
+        fillSignal (returningAudio, phase);
+        neutralAudio.makeCopyOf (returningAudio, true);
+        returningEngine.process (
+            returningAudio,
+            returning,
+            block < 20 ? &loudDetector : &silentDetector);
+        neutralEngine.process (
+            neutralAudio, neutralDynamic, &silentDetector);
+        if (block >= 170)
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < testSamples; ++sample)
+                    returnError = juce::jmax (
+                        returnError,
+                        std::abs (returningAudio.getSample (channel, sample)
+                                  - neutralAudio.getSample (channel, sample)));
+    }
+    context.expect (
+        returnError < 2.0e-4f,
+        "Dynamic Drive did not return to base Drive after detector silence");
+
+    const auto renderDynamic = [] (int renderBlockSize)
+    {
+        constexpr int totalSamples = 17 * 127 * 12;
+        dd::DistortionEngine engine;
+        engine.prepare (sampleRate, renderBlockSize, 2);
+        dd::Parameters parameters;
+        parameters.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::morphSoftClip);
+        parameters.driveDb = 12.0f;
+        parameters.dynamicPercent = 100.0f;
+        parameters.speedPercent = 50.0f;
+        parameters.autoGainMode = 0;
+        juce::AudioBuffer<float> audio (2, renderBlockSize);
+        juce::AudioBuffer<float> dynamicDetector (2, renderBlockSize);
+        std::vector<float> rendered (totalSamples, 0.0f);
+        for (int offset = 0; offset < totalSamples; offset += renderBlockSize)
+        {
+            for (int sample = 0; sample < renderBlockSize; ++sample)
+            {
+                const auto absolute = offset + sample;
+                const auto carrier = static_cast<float> (std::sin (
+                    juce::MathConstants<double>::twoPi * 997.0
+                    * static_cast<double> (absolute) / sampleRate));
+                const auto modulator = 0.15f + 0.75f * static_cast<float> (
+                    0.5 + 0.5 * std::sin (
+                        juce::MathConstants<double>::twoPi * 2.3
+                        * static_cast<double> (absolute) / sampleRate));
+                const auto value = carrier * modulator;
+                audio.setSample (0, sample, value);
+                audio.setSample (1, sample, -0.73f * value);
+                dynamicDetector.setSample (0, sample, value);
+                dynamicDetector.setSample (1, sample, -0.73f * value);
+            }
+            engine.process (audio, parameters, &dynamicDetector);
+            for (int sample = 0; sample < renderBlockSize; ++sample)
+                rendered[static_cast<size_t> (offset + sample)] =
+                    audio.getSample (0, sample);
+        }
+        return rendered;
+    };
+    const auto dynamic17 = renderDynamic (17);
+    const auto dynamic127 = renderDynamic (127);
+    auto blockSizeError = 0.0f;
+    for (size_t sample = 4096; sample < dynamic17.size(); ++sample)
+        blockSizeError = juce::jmax (
+            blockSizeError,
+            std::abs (dynamic17[sample] - dynamic127[sample]));
+    context.expect (
+        blockSizeError < 2.0e-4f,
+        "Dynamic Drive is block-size dependent after control settling");
+
+    dd::DistortionEngine smartDynamicEngine;
+    auto smartDynamic = dynamic;
+    smartDynamic.autoGainMode = 2;
+    smartDynamicEngine.prepare (sampleRate, testSamples, 2);
+    smartDynamicEngine.primeAutoGain (smartDynamic);
+    phase = 0.0;
+    for (int block = 0; block < 200; ++block)
+    {
+        fillSignal (first, phase);
+        detector.makeCopyOf (first, true);
+        smartDynamicEngine.process (first, smartDynamic, &detector);
+    }
+    context.expect (
+        smartDynamicEngine.isSmartAutoGainLocked()
+            && smartDynamicEngine.getSmartAutoGainProgress() >= 0.999f,
+        "Smart Auto Gain did not retain its finite measurement lifecycle "
+        "with Dynamic enabled");
+}
+
+void testVersionNinePlacementRouting (TestContext& context)
+{
+    constexpr int routeBlock = 256;
+    dd::TransientSplitter splitter;
+    splitter.prepare (sampleRate, routeBlock, 2);
+    splitter.setParameters (100.0f, 0.0f, 100.0f, 50.0f);
+    juce::AudioBuffer<float> input (2, routeBlock);
+    juce::AudioBuffer<float> transient (2, routeBlock);
+    juce::AudioBuffer<float> sustain (2, routeBlock);
+    std::vector<float> history;
+    history.reserve (static_cast<size_t> (routeBlock * 48));
+    double phase = 0.0;
+    auto maximumError = 0.0f;
+    for (int block = 0; block < 48; ++block)
+    {
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto value = 0.35f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * 733.0 / sampleRate;
+            input.setSample (0, sample, value);
+            input.setSample (1, sample, value * 0.71f);
+            history.push_back (value);
+        }
+        splitter.process (input, transient, sustain, routeBlock);
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto absolute = block * routeBlock + sample;
+            const auto delayed = absolute >= splitter.latency()
+                ? history[static_cast<size_t> (absolute - splitter.latency())]
+                : 0.0f;
+            maximumError = juce::jmax (
+                maximumError,
+                std::abs (transient.getSample (0, sample)
+                          + sustain.getSample (0, sample) - delayed));
+        }
+    }
+    context.expect (
+        maximumError < 2.0e-6f,
+        "T/S splitter outputs are not complementary");
+
+    dd::Parameters routed;
+    routed.mode = static_cast<int> (dd::DistortionEngine::Mode::hardClip);
+    routed.driveDb = 30.0f;
+    routed.autoGainMode = 0;
+    routed.mix = 1.0f;
+    routed.route = 1;
+    routed.placementPercent = 0.0f;
+    dd::DistortionEngine engine;
+    engine.prepare (sampleRate, routeBlock, 2);
+    const auto neutralLatency = engine.getLatencySamples();
+    juce::AudioBuffer<float> audio (2, routeBlock);
+    audio.clear();
+    engine.process (audio, routed);
+    context.expect (
+        engine.getLatencySamples() == neutralLatency,
+        "T/S Route at Placement 0 adds latency or FFT work");
+
+    routed.placementPercent = -100.0f;
+    engine.process (audio, routed);
+    context.expect (
+        engine.getLatencySamples() > neutralLatency,
+        "Active T/S routing does not report its FFT latency");
+
+    dd::Parameters midOnly = routed;
+    midOnly.route = 0;
+    midOnly.placementPercent = -100.0f;
+    dd::Parameters sideOnly = midOnly;
+    sideOnly.placementPercent = 100.0f;
+    dd::DistortionEngine midEngine;
+    dd::DistortionEngine sideEngine;
+    midEngine.prepare (sampleRate, routeBlock, 2);
+    sideEngine.prepare (sampleRate, routeBlock, 2);
+    double midEnergy = 0.0;
+    double sideEnergy = 0.0;
+    phase = 0.0;
+    for (int block = 0; block < 64; ++block)
+    {
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto value = 0.31f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * 997.0 / sampleRate;
+            audio.setSample (0, sample, value);
+            audio.setSample (1, sample, value);
+        }
+        auto sideAudio = audio;
+        midEngine.process (audio, midOnly);
+        sideEngine.process (sideAudio, sideOnly);
+        if (block >= 48)
+            for (int sample = 0; sample < routeBlock; ++sample)
+            {
+                midEnergy += std::pow (
+                    static_cast<double> (audio.getSample (0, sample)), 2.0);
+                sideEnergy += std::pow (
+                    static_cast<double> (sideAudio.getSample (0, sample)), 2.0);
+            }
+    }
+    context.expect (
+        midEnergy > sideEnergy * 1.1,
+        "M/S endpoints do not isolate Mid processing on a dual-mono signal");
+
+    dd::Parameters intermediate = midOnly;
+    intermediate.placementPercent = 50.0f;
+    dd::DistortionEngine intermediateEngine;
+    intermediateEngine.prepare (sampleRate, routeBlock, 2);
+    auto intermediateEnergy = 0.0;
+    phase = 0.0;
+    for (int block = 0; block < 64; ++block)
+    {
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto value = 0.31f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * 997.0 / sampleRate;
+            audio.setSample (0, sample, value);
+            audio.setSample (1, sample, value);
+        }
+        intermediateEngine.process (audio, intermediate);
+        if (block >= 48)
+            for (int sample = 0; sample < routeBlock; ++sample)
+                intermediateEnergy += std::pow (
+                    static_cast<double> (audio.getSample (0, sample)), 2.0);
+    }
+    context.expect (
+        intermediateEnergy > juce::jmin (midEnergy, sideEnergy)
+            && intermediateEnergy < juce::jmax (midEnergy, sideEnergy),
+        "M/S intermediate Placement does not interpolate between endpoints");
+
+    dd::DistortionEngine antiMidEngine;
+    dd::DistortionEngine antiSideEngine;
+    antiMidEngine.prepare (sampleRate, routeBlock, 2);
+    antiSideEngine.prepare (sampleRate, routeBlock, 2);
+    auto antiMidEnergy = 0.0;
+    auto antiSideEnergy = 0.0;
+    phase = 0.0;
+    for (int block = 0; block < 64; ++block)
+    {
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto value = 0.31f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * 997.0 / sampleRate;
+            audio.setSample (0, sample, value);
+            audio.setSample (1, sample, -value);
+        }
+        auto sideAudio = audio;
+        antiMidEngine.process (audio, midOnly);
+        antiSideEngine.process (sideAudio, sideOnly);
+        if (block >= 48)
+            for (int sample = 0; sample < routeBlock; ++sample)
+            {
+                antiMidEnergy += std::pow (
+                    static_cast<double> (audio.getSample (0, sample)), 2.0);
+                antiSideEnergy += std::pow (
+                    static_cast<double> (sideAudio.getSample (0, sample)), 2.0);
+            }
+    }
+    context.expect (
+        antiSideEnergy > antiMidEnergy * 1.1,
+        "M/S endpoints do not isolate Side processing on anti-phase input");
+
+    dd::DistortionEngine monoSideEngine;
+    dd::DistortionEngine monoDryEngine;
+    monoSideEngine.prepare (sampleRate, routeBlock, 1);
+    monoDryEngine.prepare (sampleRate, routeBlock, 1);
+    auto monoDry = sideOnly;
+    monoDry.placementPercent = 0.0f;
+    monoDry.mix = 0.0f;
+    juce::AudioBuffer<float> monoSideAudio (1, routeBlock);
+    juce::AudioBuffer<float> monoDryAudio (1, routeBlock);
+    phase = 0.0;
+    auto monoError = 0.0f;
+    for (int block = 0; block < 48; ++block)
+    {
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto value = 0.27f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * 701.0 / sampleRate;
+            monoSideAudio.setSample (0, sample, value);
+        }
+        monoDryAudio.makeCopyOf (monoSideAudio, true);
+        monoSideEngine.process (monoSideAudio, sideOnly);
+        monoDryEngine.process (monoDryAudio, monoDry);
+        if (block >= 40)
+            for (int sample = 0; sample < routeBlock; ++sample)
+                monoError = juce::jmax (
+                    monoError,
+                    std::abs (monoSideAudio.getSample (0, sample)
+                              - monoDryAudio.getSample (0, sample)));
+    }
+    context.expect (
+        monoError < 2.0e-6f,
+        "M/S Side-only placement changed a mono signal");
+
+    for (const auto splitterRate : { 44100.0, 192000.0 })
+    {
+        constexpr int splitterBlock = 127;
+        dd::TransientSplitter rateSplitter;
+        rateSplitter.prepare (splitterRate, splitterBlock, 2);
+        rateSplitter.setParameters (100.0f, 0.0f, 100.0f, 50.0f);
+        juce::AudioBuffer<float> rateInput (2, splitterBlock);
+        juce::AudioBuffer<float> rateTransient (2, splitterBlock);
+        juce::AudioBuffer<float> rateSustain (2, splitterBlock);
+        std::array<std::vector<float>, 2> rateHistory;
+        for (auto& channel : rateHistory)
+            channel.reserve (splitterBlock * 96);
+        auto rateError = 0.0f;
+        phase = 0.0;
+        for (int block = 0; block < 96; ++block)
+        {
+            for (int sample = 0; sample < splitterBlock; ++sample)
+            {
+                const auto absolute = block * splitterBlock + sample;
+                const auto impulse = absolute % 997 == 0 ? 0.7f : 0.0f;
+                const auto tone = 0.13f * static_cast<float> (std::sin (phase));
+                phase += juce::MathConstants<double>::twoPi
+                    * 733.0 / splitterRate;
+                rateInput.setSample (0, sample, impulse + tone);
+                rateInput.setSample (1, sample, impulse - 0.61f * tone);
+                rateHistory[0].push_back (rateInput.getSample (0, sample));
+                rateHistory[1].push_back (rateInput.getSample (1, sample));
+            }
+            rateSplitter.process (
+                rateInput, rateTransient, rateSustain, splitterBlock);
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < splitterBlock; ++sample)
+                {
+                    const auto absolute = block * splitterBlock + sample;
+                    const auto delayed = absolute >= rateSplitter.latency()
+                        ? rateHistory[static_cast<size_t> (channel)]
+                            [static_cast<size_t> (
+                                absolute - rateSplitter.latency())]
+                        : 0.0f;
+                    rateError = juce::jmax (
+                        rateError,
+                        std::abs (
+                            rateTransient.getSample (channel, sample)
+                            + rateSustain.getSample (channel, sample)
+                            - delayed));
+                }
+        }
+        context.expect (
+            rateError < 2.0e-6f,
+            "T/S complementarity changed at "
+                + juce::String (splitterRate) + " Hz");
+
+        rateSplitter.reset();
+        rateInput.clear();
+        auto resetMagnitude = 0.0f;
+        for (int block = 0; block < 8; ++block)
+        {
+            rateSplitter.process (
+                rateInput, rateTransient, rateSustain, splitterBlock);
+            resetMagnitude = juce::jmax (
+                resetMagnitude,
+                rateTransient.getMagnitude (0, splitterBlock));
+            resetMagnitude = juce::jmax (
+                resetMagnitude,
+                rateSustain.getMagnitude (0, splitterBlock));
+        }
+        context.expect (
+            resetMagnitude < 1.0e-8f,
+            "T/S reset retained audio at "
+                + juce::String (splitterRate) + " Hz");
+    }
+}
+
+void testVersionNineAutomationMatrix (TestContext& context)
+{
+    constexpr std::array<double, 4> rates {
+        44100.0, 48000.0, 96000.0, 192000.0
+    };
+    constexpr std::array<int, 3> blockSizes { 17, 127, 512 };
+    for (const auto rate : rates)
+        for (const auto size : blockSizes)
+        {
+            dd::DistortionEngine engine;
+            engine.prepare (rate, size, 2);
+            dd::Parameters parameters;
+            parameters.mode = static_cast<int> (
+                dd::DistortionEngine::Mode::hardClip);
+            parameters.driveDb = 18.0f;
+            parameters.autoGainMode = 0;
+            juce::AudioBuffer<float> audio (2, size);
+            double phase = 0.0;
+            auto previous = 0.0f;
+            auto maximumStep = 0.0f;
+            for (int block = 0; block < 36; ++block)
+            {
+                parameters.dynamicPercent = std::array<float, 3> {
+                    -100.0f, 0.0f, 100.0f
+                }[static_cast<size_t> (block % 3)];
+                parameters.speedPercent = std::array<float, 3> {
+                    0.0f, 50.0f, 100.0f
+                }[static_cast<size_t> ((block / 3) % 3)];
+                parameters.inputHpHz = std::array<float, 3> {
+                    0.0f, 1.0f, 200.0f
+                }[static_cast<size_t> ((block / 2) % 3)];
+                parameters.outputLpHz = std::array<float, 3> {
+                    20000.0f, 19999.0f, 2000.0f
+                }[static_cast<size_t> ((block / 4) % 3)];
+                for (int sample = 0; sample < size; ++sample)
+                {
+                    const auto value = 0.22f * static_cast<float> (
+                        std::sin (phase)) + 0.03f;
+                    phase += juce::MathConstants<double>::twoPi * 997.0 / rate;
+                    audio.setSample (0, sample, value);
+                    audio.setSample (1, sample, value * 0.79f);
+                }
+                engine.process (audio, parameters);
+                for (int channel = 0; channel < 2; ++channel)
+                    for (int sample = 0; sample < size; ++sample)
+                    {
+                        const auto value = audio.getSample (channel, sample);
+                        context.expect (
+                            std::isfinite (value),
+                            "0.9 automation matrix produced NaN/Inf");
+                        if (channel == 0)
+                        {
+                            maximumStep = juce::jmax (
+                                maximumStep, std::abs (value - previous));
+                            previous = value;
+                        }
+                    }
+            }
+            context.expect (
+                maximumStep < 0.35f,
+                "HP/LP/Dynamic automation produced an unbounded step at "
+                    + juce::String (rate) + " Hz / " + juce::String (size)
+                    + ": " + juce::String (maximumStep));
+
+            for (int block = 0; block < 36; ++block)
+            {
+                parameters.dynamicPercent = -100.0f
+                    + 200.0f * static_cast<float> (block) / 35.0f;
+                parameters.speedPercent = 37.0f;
+                parameters.inputHpHz = 83.0f;
+                parameters.outputLpHz = 7310.0f;
+                for (int sample = 0; sample < size; ++sample)
+                {
+                    const auto value = 0.22f * static_cast<float> (
+                        std::sin (phase));
+                    phase += juce::MathConstants<double>::twoPi * 997.0 / rate;
+                    audio.setSample (0, sample, value);
+                    audio.setSample (1, sample, -0.79f * value);
+                }
+                engine.process (audio, parameters);
+                for (int channel = 0; channel < 2; ++channel)
+                    for (int sample = 0; sample < size; ++sample)
+                        context.expect (
+                            std::isfinite (audio.getSample (channel, sample)),
+                            "Dynamic ramp automation produced NaN/Inf at "
+                                + juce::String (rate) + " Hz / "
+                                + juce::String (size));
+            }
+        }
+
+    for (int mode = 0; mode < dd::DistortionEngine::modeCount; ++mode)
+        for (int stages = 1; stages <= dd::DistortionEngine::maximumStages; ++stages)
+            for (const auto speed : { 0.0f, 50.0f, 100.0f })
+            {
+                dd::DistortionEngine engine;
+                engine.prepare (48000.0, 64, 2);
+                dd::Parameters parameters;
+                parameters.mode = mode;
+                parameters.driveDb = (mode + stages) % 2 == 0 ? 0.0f : 36.0f;
+                parameters.character = dd::DistortionEngine::isCharacterBipolar (
+                    mode) ? -0.37f : 0.63f;
+                parameters.stages = stages;
+                parameters.speedPercent = speed;
+                parameters.autoGainMode = 0;
+                juce::AudioBuffer<float> audio (2, 64);
+                double phase = 0.0;
+                for (const auto dynamic : { -100.0f, 0.0f, 100.0f })
+                {
+                    parameters.dynamicPercent = dynamic;
+                    for (int block = 0; block < 3; ++block)
+                    {
+                        for (int sample = 0; sample < 64; ++sample)
+                        {
+                            const auto value = 0.71f * static_cast<float> (
+                                std::sin (phase));
+                            phase += juce::MathConstants<double>::twoPi
+                                * 1301.0 / 48000.0;
+                            audio.setSample (0, sample, value);
+                            audio.setSample (1, sample, -0.73f * value);
+                        }
+                        engine.process (audio, parameters);
+                        for (int channel = 0; channel < 2; ++channel)
+                            for (int sample = 0; sample < 64; ++sample)
+                                context.expect (
+                                    std::isfinite (audio.getSample (channel, sample)),
+                                    "Dynamic matrix failed for mode/stage/speed "
+                                        + juce::String (mode + 1) + "/"
+                                        + juce::String (stages) + "/"
+                                        + juce::String (speed));
+                    }
+                }
+            }
+
+    for (const auto linked : { false, true })
+        for (const auto linearPhase : { false, true })
+            for (const auto bands : { 2, 4 })
+            {
+                dd::MultibandProcessor processor;
+                processor.prepare (48000.0, 128, 2);
+                dd::Parameters master;
+                master.route = 1;
+                master.placementPercent = -100.0f;
+                master.driveDb = 18.0f;
+                master.dynamicPercent = 100.0f;
+                master.quality = 3;
+                master.autoGainMode = 0;
+                dd::MultibandParameters multiband;
+                multiband.enabled = true;
+                multiband.linked = linked;
+                multiband.bandCount = bands;
+                multiband.phaseMode = linearPhase ? 1 : 0;
+                for (auto& band : multiband.bands)
+                {
+                    band.saturation = master;
+                    band.saturation.placementPercent = 100.0f;
+                }
+                juce::AudioBuffer<float> audio (2, 128);
+                juce::AudioBuffer<float> detector (2, 128);
+                double phase = 0.0;
+                for (int block = 0; block < 12; ++block)
+                {
+                    fillSignal (audio, phase);
+                    detector.makeCopyOf (audio);
+                    processor.process (
+                        audio, master, multiband, -1, &detector);
+                    for (int channel = 0; channel < 2; ++channel)
+                        for (int sample = 0; sample < 128; ++sample)
+                            context.expect (
+                                std::isfinite (audio.getSample (channel, sample)),
+                                "Combined T/S multiband path produced NaN/Inf");
+                }
+                context.expect (
+                    processor.getLatencySamples (linearPhase)
+                        == processor.getMaximumLatencySamples (linearPhase),
+                    "Combined T/S multiband latency is not fully reported");
+            }
+}
+
+void testVersionNineAudioThreadAllocationBoundary (TestContext& context)
+{
+    constexpr int samples = 512;
+    dd::Parameters parameters;
+    parameters.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::spectralClip);
+    parameters.driveDb = 24.0f;
+    parameters.character = 0.61f;
+    parameters.stages = 8;
+    parameters.quality = 3;
+    parameters.autoGainMode = 2;
+    parameters.route = 1;
+    parameters.placementPercent = -73.0f;
+    parameters.dynamicPercent = 100.0f;
+    parameters.speedPercent = 100.0f;
+    parameters.inputHpHz = 200.0f;
+    parameters.outputLpHz = 2000.0f;
+
+    dd::DistortionEngine engine;
+    engine.prepare (48000.0, samples, 2);
+    juce::AudioBuffer<float> audio (2, samples);
+    juce::AudioBuffer<float> detector (2, samples);
+    double phase = 0.0;
+    fillSignal (audio, phase);
+    detector.makeCopyOf (audio);
+    engine.process (audio, parameters, &detector);
+
+    allocation_probe::count = 0;
+    allocation_probe::enabled = true;
+    for (int block = 0; block < 8; ++block)
+    {
+        fillSignal (audio, phase);
+        detector.makeCopyOf (audio, true);
+        engine.process (audio, parameters, &detector);
+    }
+    allocation_probe::enabled = false;
+    const auto engineAllocations = allocation_probe::count;
+
+    dd::MultibandProcessor multibandProcessor;
+    multibandProcessor.prepare (48000.0, samples, 2);
+    dd::MultibandParameters multiband;
+    multiband.enabled = true;
+    multiband.linked = false;
+    multiband.bandCount = 4;
+    multiband.phaseMode = 1;
+    for (auto& band : multiband.bands)
+        band.saturation = parameters;
+    fillSignal (audio, phase);
+    detector.makeCopyOf (audio);
+    multibandProcessor.process (
+        audio, parameters, multiband, -1, &detector);
+
+    allocation_probe::count = 0;
+    allocation_probe::enabled = true;
+    for (int block = 0; block < 4; ++block)
+    {
+        fillSignal (audio, phase);
+        detector.makeCopyOf (audio, true);
+        multibandProcessor.process (
+            audio, parameters, multiband, -1, &detector);
+    }
+    allocation_probe::enabled = false;
+    const auto multibandAllocations = allocation_probe::count;
+
+    dd::SpectrumFIFO analyzer;
+    juce::AudioBuffer<float> analyzerAudio (2, samples);
+    double analyzerPhase = 0.0;
+    allocation_probe::count = 0;
+    allocation_probe::enabled = true;
+    for (int block = 0; block < 20; ++block)
+    {
+        for (int sample = 0; sample < samples; ++sample)
+        {
+            const auto value = 0.25f * static_cast<float> (
+                std::sin (analyzerPhase));
+            analyzerPhase += juce::MathConstants<double>::twoPi
+                * 1000.0 / 48000.0;
+            analyzerAudio.setSample (0, sample, value);
+            analyzerAudio.setSample (1, sample, value);
+        }
+        analyzer.pushBlock (analyzerAudio);
+    }
+    allocation_probe::enabled = false;
+    const auto analyzerAudioThreadAllocations = allocation_probe::count;
+    const auto analyzerReady = analyzer.processIfReady();
+    const auto* magnitudes = analyzer.getMagnitudes();
+    const auto analyzerPeak = std::max_element (
+        magnitudes + 1, magnitudes + dd::SpectrumFIFO::numBins);
+    const auto analyzerPeakBin = static_cast<int> (
+        std::distance (magnitudes, analyzerPeak));
+
+    context.expect (
+        engineAllocations == 0,
+        "Single-band 0.9 processing allocated on the audio thread: "
+            + juce::String (engineAllocations));
+    context.expect (
+        multibandAllocations == 0,
+        "Multiband 0.9 processing allocated on the audio thread: "
+            + juce::String (multibandAllocations));
+    context.expect (
+        analyzerAudioThreadAllocations == 0,
+        "RTA transport allocated on the audio thread: "
+            + juce::String (analyzerAudioThreadAllocations));
+    context.expect (
+        analyzerReady && std::abs (analyzerPeakBin - 171) <= 1,
+        "RTA 8192-point reference frame has the wrong peak bin");
+}
 } // namespace
 
 static void dumpAutoGainTable()
@@ -3415,6 +4399,11 @@ int main (int argc, char** argv)
         dumpRegressionFingerprints();
         return 0;
     }
+    if (argc > 1 && juce::String (argv[1]) == "--dump-visualization")
+    {
+        dumpVisualizationFingerprints();
+        return 0;
+    }
     if (argc > 1 && juce::String (argv[1]) == "--dump-auto-gain-table")
     {
         dumpAutoGainTable();
@@ -3442,6 +4431,7 @@ int main (int argc, char** argv)
     TestContext context;
     testNewDefaultsAndGlobalBypass (context);
     testModeMetadata (context);
+    testVersionEightVisualizationSnapshots (context);
     testMultibandCrossoversAndSmartGain (context);
     testCanonicalClipCeilings (context);
     testVitalClipTransfers (context);
@@ -3475,6 +4465,10 @@ int main (int argc, char** argv)
     testSharedSecondaryContract (context);
     testOutputCeilingAtZeroDb (context);
     testInstantTableAutoGain (context);
+    testVersionNineNeutralDynamicAndToneFilters (context);
+    testVersionNinePlacementRouting (context);
+    testVersionNineAutomationMatrix (context);
+    testVersionNineAudioThreadAllocationBoundary (context);
 
     if (context.failures == 0)
     {

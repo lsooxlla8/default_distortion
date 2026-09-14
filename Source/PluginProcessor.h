@@ -3,6 +3,7 @@
 #include "DistortionEngine.h"
 #include "GlobalBypass.h"
 #include "MultibandProcessor.h"
+#include "SpectrumFIFO.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -47,9 +48,21 @@ public:
         return inputPeak.load (std::memory_order_relaxed);
     }
 
+    [[nodiscard]] float getInputPeak (int channel) const noexcept
+    {
+        return inputChannelPeaks[static_cast<size_t> (
+            juce::jlimit (0, 1, channel))].load (std::memory_order_relaxed);
+    }
+
     [[nodiscard]] float getOutputPeak() const noexcept
     {
         return outputPeak.load (std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] float getOutputPeak (int channel) const noexcept
+    {
+        return outputChannelPeaks[static_cast<size_t> (
+            juce::jlimit (0, 1, channel))].load (std::memory_order_relaxed);
     }
 
     [[nodiscard]] Parameters getCurrentParameters() const noexcept;
@@ -60,9 +73,9 @@ public:
     [[nodiscard]] int getSoloBand() const noexcept;
     void setAnalyzerEnabled (bool enabled) noexcept;
     void setMultibandLinkedFromUi (bool shouldLink);
-    int pullAnalyzerSamples (float* inputDestination,
-                             float* outputDestination,
-                             int maximumSamples) noexcept;
+    int pullAnalyzerFrames (float* inputDestination,
+                            float* outputDestination,
+                            int maximumBins) noexcept;
     [[nodiscard]] float getSmartAutoGainProgress() const noexcept
     {
         return getCurrentMultibandParameters().enabled
@@ -87,29 +100,36 @@ private:
     GlobalBypass globalBypass;
     std::atomic<float> inputPeak { 0.0f };
     std::atomic<float> outputPeak { 0.0f };
+    std::array<std::atomic<float>, 2> inputChannelPeaks {};
+    std::array<std::atomic<float>, 2> outputChannelPeaks {};
     std::atomic<int> selectedBand { 0 };
     std::atomic<int> soloBand { -1 };
     std::atomic<int> reportedLatency { 0 };
     std::atomic<bool> analyzerEnabled { false };
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        latencyTransitionGain;
 
-    static constexpr int analyzerCapacity = 32768;
-    juce::AbstractFifo analyzerFifo { analyzerCapacity };
-    std::array<float, analyzerCapacity> analyzerInput {};
-    std::array<float, analyzerCapacity> analyzerOutput {};
+    SpectrumFIFO analyzerInputFifo;
+    SpectrumFIFO analyzerOutputFifo;
     juce::AudioBuffer<float> analyzerInputBuffer;
+    juce::AudioBuffer<float> dynamicDetectorInputBuffer;
     juce::AudioBuffer<float> analyzerInputDelayBuffer;
     int analyzerInputDelayPosition = 0;
 
-    void pushAnalyzerSamples (const juce::AudioBuffer<float>& input,
-                              const juce::AudioBuffer<float>& output) noexcept;
     void delayAnalyzerInput (juce::AudioBuffer<float>& input,
                              int latencySamples) noexcept;
+    [[nodiscard]] int requestedLatencySamples (
+        const Parameters&,
+        const MultibandParameters&) const noexcept;
     void copyMasterToAllBands (const Parameters& source);
     void copyBandToMasterAndAllBands (int sourceBand);
     void parameterChanged (const juce::String&, float) override;
     std::atomic<bool> handlingLinkTransition { false };
     std::atomic<bool> restoringState { false };
     std::atomic<bool> lastLinkedState { true };
+    Parameters processingMaster;
+    MultibandParameters processingMultiband;
+    bool latencyChangePending = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DefaultDistortionAudioProcessor)
 };
