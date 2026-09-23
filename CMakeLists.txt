@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(default_distortion VERSION 0.8.0 LANGUAGES C CXX)
+project(default_distortion VERSION 0.9.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,9 +41,17 @@ juce_add_plugin(DefaultDistortion
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     NEEDS_WEB_BROWSER FALSE
-    NEEDS_CURL FALSE
+    NEEDS_CURL TRUE
     LV2URI "https://github.com/lsooxlla8/default_distortion"
     COPY_PLUGIN_AFTER_BUILD FALSE
+)
+
+juce_add_binary_data(DefaultDistortionFontAssets
+    NAMESPACE DefaultDistortionFonts
+    HEADER_NAME DefaultDistortionFonts.h
+    SOURCES
+        Resources/Fonts/JetBrainsMono/JetBrainsMono-Medium.ttf
+        Resources/Fonts/JetBrainsMono/JetBrainsMono-ExtraBold.ttf
 )
 
 target_sources(DefaultDistortion
@@ -52,30 +60,42 @@ target_sources(DefaultDistortion
         Source/DistortionEngine.h
         Source/MultibandProcessor.cpp
         Source/MultibandProcessor.h
+        Source/TransientSplitter.h
+        Source/SpectrumFIFO.h
         Source/GlobalBypass.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
         Source/SecondaryAutoGainTable.h
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
+        Source/UILayout.h
+        Source/UI/DefaultFamilyTheme.cpp
+        Source/UI/DefaultFamilyTheme.h
+        Source/UpdateChecker.cpp
+        Source/UpdateChecker.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
         Source/PluginProcessor.cpp
         Source/PluginProcessor.h
+        docs/architecture-0.9.md
+        docs/compatibility-0.8.md
 )
 
 target_compile_definitions(DefaultDistortion
     PUBLIC
+        DEFAULT_DISTORTION_VERSION="${PROJECT_VERSION}"
         JUCE_WEB_BROWSER=0
-        JUCE_USE_CURL=0
         JUCE_PLUGINHOST_LADSPA=0
         JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
 target_link_libraries(DefaultDistortion
     PRIVATE
+        DefaultDistortionFontAssets
         juce::juce_audio_utils
+        juce::juce_data_structures
         juce::juce_dsp
+        juce::juce_events
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
@@ -107,12 +127,15 @@ target_sources(DefaultDistortionTests
         Source/DistortionEngine.h
         Source/MultibandProcessor.cpp
         Source/MultibandProcessor.h
+        Source/TransientSplitter.h
+        Source/SpectrumFIFO.h
         Source/GlobalBypass.h
         Source/AutoGainTable.h
         Source/SpectralAutoGainTable.h
         Source/SecondaryAutoGainTable.h
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
+        Source/UILayout.h
         Tests/DspTests.cpp
 )
 
@@ -132,3 +155,43 @@ target_link_libraries(DefaultDistortionTests
 
 enable_testing()
 add_test(NAME DefaultDistortionDSP COMMAND DefaultDistortionTests)
+
+add_executable(DefaultDistortionContractTests Tests/PluginContractTests.cpp)
+
+target_compile_definitions(DefaultDistortionContractTests
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(DefaultDistortionContractTests
+    PRIVATE
+        DefaultDistortion
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+add_test(NAME DefaultDistortionContract COMMAND DefaultDistortionContractTests)
+
+add_executable(DefaultDistortionScreenshot Tests/ScreenshotCapture.cpp)
+set_target_properties(DefaultDistortionScreenshot PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY
+        "${CMAKE_BINARY_DIR}/DefaultDistortionScreenshot_artefacts/$<CONFIG>"
+)
+
+target_compile_definitions(DefaultDistortionScreenshot
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(DefaultDistortionScreenshot
+    PRIVATE
+        DefaultDistortion
+        juce::juce_audio_utils
+        juce::juce_graphics
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)

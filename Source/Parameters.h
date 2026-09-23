@@ -25,6 +25,17 @@ inline constexpr auto multibandEnabled = "multibandEnabled";
 inline constexpr auto multibandLink = "multibandLink";
 inline constexpr auto multibandBandCount = "multibandBandCount";
 inline constexpr auto multibandPhase = "multibandPhase";
+inline constexpr auto route = "route";
+inline constexpr auto placement = "placement";
+inline constexpr auto dynamic = "dynamic";
+inline constexpr auto speed = "speed";
+inline constexpr auto inputHp = "inputHp";
+inline constexpr auto inputHpDetector = "inputHpDetector";
+inline constexpr auto outputLp = "outputLp";
+inline constexpr auto transientStrength = "transientStrength";
+inline constexpr auto transientBalance = "transientBalance";
+inline constexpr auto transientHold = "transientHold";
+inline constexpr auto transientSmooth = "transientSmooth";
 
 inline juce::String crossoverFrequency (int crossover)
 {
@@ -56,6 +67,17 @@ struct Parameters
     float outputDb = 0.0f;
     int quality = 0;
     int autoGainMode = 1;
+    int route = 0;
+    float placementPercent = 0.0f;
+    float dynamicPercent = 0.0f;
+    float speedPercent = 100.0f;
+    float inputHpHz = 0.0f;
+    bool inputHpDetector = false;
+    float outputLpHz = 20000.0f;
+    float transientStrengthPercent = 100.0f;
+    float transientBalancePercent = 0.0f;
+    float transientHoldPercent = 50.0f;
+    float transientSmoothPercent = 50.0f;
 };
 
 struct BandParameters

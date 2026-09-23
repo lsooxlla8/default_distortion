@@ -2,6 +2,7 @@
 
 #include "ChowTapeHysteresis.h"
 #include "Parameters.h"
+#include "TransientSplitter.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_dsp/juce_dsp.h>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace dd
@@ -72,11 +74,39 @@ public:
     void prepare (double newSampleRate, int maximumBlockSize, int channels);
     void primeAutoGain (const Parameters&);
     void reset();
-    void process (juce::AudioBuffer<float>& buffer, const Parameters& parameters);
+    void process (juce::AudioBuffer<float>& buffer,
+                  const Parameters& parameters,
+                  const juce::AudioBuffer<float>* detectorInput = nullptr);
     void processBand (juce::AudioBuffer<float>& buffer,
-                      const Parameters& parameters);
+                      const Parameters& parameters,
+                      const juce::AudioBuffer<float>* detectorInput = nullptr,
+                      bool forceTransientLatency = false,
+                      const float* sharedDynamicOffsets = nullptr,
+                      int sharedDynamicSamples = -1);
 
-    [[nodiscard]] int getLatencySamples() const noexcept { return fixedLatencySamples; }
+    [[nodiscard]] const float* getDynamicDriveOffsets() const noexcept
+    {
+        return dynamicDriveOffsets.data();
+    }
+    [[nodiscard]] int getDynamicDriveSampleCount() const noexcept
+    {
+        return dynamicDriveSamples;
+    }
+    void synchroniseDynamicStateFrom (const DistortionEngine&) noexcept;
+    static std::pair<float, float> dynamicsTimingForSpeed (float) noexcept;
+
+    [[nodiscard]] int getLatencySamples() const noexcept
+    {
+        return fixedLatencySamples + routingLatencySamples;
+    }
+    [[nodiscard]] int getMaximumLatencySamples() const noexcept
+    {
+        return fixedLatencySamples + transientRoutingLatencySamples;
+    }
+    [[nodiscard]] int getBaseLatencySamples() const noexcept
+    {
+        return fixedLatencySamples;
+    }
     [[nodiscard]] float getSmartAutoGainProgress() const noexcept
     {
         return smartProgress.load (std::memory_order_relaxed);
@@ -84,6 +114,10 @@ public:
     [[nodiscard]] bool isSmartAutoGainLocked() const noexcept
     {
         return smartLockedForUi.load (std::memory_order_relaxed);
+    }
+    [[nodiscard]] float getSmartAutoGainDb() const noexcept
+    {
+        return smartGainDbForUi.load (std::memory_order_relaxed);
     }
 
     static const std::array<juce::String, modeCount>& getModeNames();
@@ -315,7 +349,7 @@ private:
     static bool usesLegacyDrivePath (Mode mode) noexcept;
     static bool usesDriveAsAlgorithmParameter (Mode mode) noexcept;
     static bool usesOversampling (Mode mode) noexcept;
-    void resetSmartAutoGain() noexcept;
+    void resetSmartAutoGain (bool preserveGain = false) noexcept;
     void prepareKWeightingFilters();
     void accumulateLoudnessSample (float dry, float wet, int channel) noexcept;
     void finishLoudnessSlice() noexcept;
@@ -327,7 +361,24 @@ private:
     void processInternal (juce::AudioBuffer<float>&,
                           const Parameters&,
                           bool allowSmartAutoGain,
-                          bool clampFinalOutput);
+                          bool clampFinalOutput,
+                          const juce::AudioBuffer<float>* detectorInput,
+                          bool forceTransientLatency,
+                          const float* sharedDynamicOffsets,
+                          int sharedDynamicSamples);
+    void prepareDynamicDrive (const juce::AudioBuffer<float>&,
+                              const Parameters&,
+                              int samples) noexcept;
+    void updateInputHighPass (float cutoffHz, bool detectorOnly);
+    void updateOutputLowPass (float cutoffHz);
+    void processInputHighPass (juce::AudioBuffer<float>&);
+    float processOutputLowPassSample (float input, int channel) noexcept;
+    void applyPlacementRouting (juce::AudioBuffer<float>& wet,
+                                juce::AudioBuffer<float>& dry,
+                                const Parameters&,
+                                bool forceTransientLatency);
+    void delayForTransientRouting (juce::AudioBuffer<float>& wet,
+                                   juce::AudioBuffer<float>& dry);
 
     double sampleRate = 44100.0;
     int preparedChannels = 2;
@@ -339,6 +390,12 @@ private:
     std::array<std::array<StageState, maximumStages>, maximumChannels> stageStates {};
     std::array<SpectralState, maximumChannels> spectralStates {};
     std::array<ToneFilters, maximumChannels> toneFilters {};
+    std::array<juce::IIRFilter, maximumChannels> inputHpFirst {};
+    std::array<juce::IIRFilter, maximumChannels> inputHpSecond {};
+    std::array<juce::IIRFilter, maximumChannels> detectorHpFirst {};
+    std::array<juce::IIRFilter, maximumChannels> detectorHpSecond {};
+    std::array<juce::IIRFilter, maximumChannels> outputLpFirst {};
+    std::array<juce::IIRFilter, maximumChannels> outputLpSecond {};
     std::array<KWeightingFilter, maximumChannels> smartDryKWeighting {};
     std::array<KWeightingFilter, maximumChannels> smartWetKWeighting {};
     std::array<float, maximumChannels> dcPreviousInput {};
@@ -355,8 +412,24 @@ private:
     std::array<std::vector<float>, maximumChannels> wetDelayBuffers;
     std::array<int, maximumChannels> dryDelayPositions {};
     std::array<int, maximumChannels> wetDelayPositions {};
+    std::array<std::vector<float>, maximumChannels> routeDryDelayBuffers;
+    std::array<std::vector<float>, maximumChannels> routeWetDelayBuffers;
+    std::array<int, maximumChannels> routeDryDelayPositions {};
+    std::array<int, maximumChannels> routeWetDelayPositions {};
 
     juce::AudioBuffer<float> dryBuffer;
+    juce::AudioBuffer<float> dryTransientBuffer;
+    juce::AudioBuffer<float> drySustainBuffer;
+    juce::AudioBuffer<float> wetTransientBuffer;
+    juce::AudioBuffer<float> wetSustainBuffer;
+    TransientSplitter routingTransientSplitter;
+    bool transientPlacementActive = false;
+    float transientPlacementWeight = 1.0f;
+    float sustainPlacementWeight = 1.0f;
+    std::vector<float> dynamicDriveOffsets;
+    const float* activeDynamicDriveOffsets = nullptr;
+    int dynamicDriveSamples = 0;
+    float dynamicEnvelope = 0.0f;
     juce::dsp::FFT fft { fftOrder };
     std::array<float, fftSize> spectralWindow {};
 
@@ -367,9 +440,19 @@ private:
     float smoothedTone = 0.0f;
     float smoothedMix = 1.0f;
     float smoothedOutputDb = 0.0f;
+    float smoothedDynamicPercent = 0.0f;
+    float smoothedInputHpHz = 0.0f;
+    float smoothedOutputLpHz = 20000.0f;
+    float lastInputHpCoefficientHz = std::numeric_limits<float>::quiet_NaN();
+    float lastOutputLpCoefficientHz = std::numeric_limits<float>::quiet_NaN();
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inputHpMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> detectorHpMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputLpMix;
     float autoGainLinear = 1.0f;
     float deterministicGainLinear = 1.0f;
     float smartGainLinear = 1.0f;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smartGainSmoother;
     double smartWetPeak = 0.0;
     double smartDrySliceEnergy = 0.0;
     double smartWetSliceEnergy = 0.0;
@@ -386,10 +469,13 @@ private:
     bool smartGainLocked = false;
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };
+    std::atomic<float> smartGainDbForUi { 0.0f };
     std::uint64_t lastGainSignature = 0;
     std::uint64_t lastGainLookupSignature = 0;
     std::uint64_t lastSmartGainSignature = 0;
     float lastToneCoefficientAmount = std::numeric_limits<float>::quiet_NaN();
     bool toneFiltersBypassed = true;
+    int routingLatencySamples = 0;
+    int transientRoutingLatencySamples = 0;
 };
 } // namespace dd
