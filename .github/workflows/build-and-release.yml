@@ -42,7 +42,6 @@ jobs:
             libjack-jackd2-dev \
             libfontconfig1-dev \
             libfreetype-dev \
-            libcurl4-openssl-dev \
             libx11-dev \
             libxcomposite-dev \
             libxcursor-dev \
@@ -53,10 +52,7 @@ jobs:
             libxi-dev \
             libglu1-mesa-dev \
             mesa-common-dev \
-            libegl-dev \
-            xvfb \
-            openbox \
-            x11-utils
+            libegl-dev
 
       - name: Configure macOS universal
         if: runner.os == 'macOS'
@@ -100,37 +96,6 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Render UI matrix on macOS
-        if: runner.os == 'macOS'
-        run: >
-          build/DefaultDistortionScreenshot_artefacts/Release/DefaultDistortionScreenshot
-          build/ui-captures
-
-      - name: Render UI matrix on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: >
-          build/DefaultDistortionScreenshot_artefacts/Release/DefaultDistortionScreenshot.exe
-          build/ui-captures
-
-      - name: Render UI matrix on Linux
-        if: runner.os == 'Linux'
-        run: |
-          xvfb-run -a bash -euo pipefail -c '
-            openbox >/tmp/default-distortion-openbox.log 2>&1 &
-            wm_pid=$!
-            trap "kill ${wm_pid}" EXIT
-            for attempt in {1..50}; do
-              if xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "#"; then
-                break
-              fi
-              sleep 0.1
-            done
-            xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "#"
-            build/DefaultDistortionScreenshot_artefacts/Release/DefaultDistortionScreenshot \
-              build/ui-captures
-          '
-
       - name: Package macOS
         if: runner.os == 'macOS'
         shell: bash
@@ -140,18 +105,22 @@ jobs:
           else
             version="ci-${GITHUB_SHA::7}"
           fi
-          packaging/macos/build_pkg.sh \
-            "$version" \
-            build/DefaultDistortion_artefacts/Release \
-            packages
-          payload_list="packages/macos-payload.txt"
-          pkgutil --payload-files \
-            "packages/default_distortion-${version}-macOS-universal.pkg" \
-            > "$payload_list"
-          grep -q \
-            'Library/Audio/Plug-Ins/VST3/default_distortion.vst3' \
-            "$payload_list"
-          rm "$payload_list"
+          root="packages/default_distortion-${version}-macOS-universal"
+          mkdir -p "$root/AU" "$root/VST3" "$root/Standalone"
+          ditto \
+            build/DefaultDistortion_artefacts/Release/AU/default_distortion.component \
+            "$root/AU/default_distortion.component"
+          ditto \
+            build/DefaultDistortion_artefacts/Release/VST3/default_distortion.vst3 \
+            "$root/VST3/default_distortion.vst3"
+          ditto \
+            build/DefaultDistortion_artefacts/Release/Standalone/default_distortion.app \
+            "$root/Standalone/default_distortion.app"
+          cp BUILDING.md LICENSE.md README.md THIRD_PARTY_NOTICES.md "$root/"
+          cp -R LICENSES "$root/"
+          ditto -c -k --keepParent \
+            "$root" \
+            "packages/default_distortion-${version}-macOS-universal.zip"
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -174,18 +143,9 @@ jobs:
             "BUILDING.md", "LICENSE.md", "README.md", "THIRD_PARTY_NOTICES.md" `
             "$root/"
           Copy-Item -Recurse "LICENSES" "$root/LICENSES"
-          choco install innosetup --no-progress -y
-          $sourceRoot = (Resolve-Path $root).Path
-          $outputDir = (Resolve-Path "packages").Path
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            "/DAppVersion=$version" `
-            "/DSourceRoot=$sourceRoot" `
-            "/DOutputDir=$outputDir" `
-            "packaging/windows/default_distortion.iss"
-          $installer = "packages/default_distortion-$version-Windows-x64-Setup.exe"
-          if (-not (Test-Path $installer)) {
-            throw "Inno Setup did not create $installer"
-          }
+          Compress-Archive `
+            -Path $root `
+            -DestinationPath "packages/default_distortion-$version-Windows-x64.zip"
 
       - name: Package Linux
         if: runner.os == 'Linux'
@@ -209,31 +169,17 @@ jobs:
             "$root/Standalone/"
           cp BUILDING.md LICENSE.md README.md THIRD_PARTY_NOTICES.md "$root/"
           cp -R LICENSES "$root/"
-          packaging/linux/make_installer.sh "$version" "$root" packages
-          installer="packages/default_distortion-${version}-Linux-x64.run"
-          "$installer" --help >/dev/null
-          test_home="$(mktemp -d)"
-          HOME="$test_home" "$installer" --user
-          test -x "$test_home/.local/bin/default_distortion"
-          test -d "$test_home/.vst3/default_distortion.vst3"
-          test -d "$test_home/.lv2/default_distortion.lv2"
+          tar -C packages -czf \
+            "packages/default_distortion-${version}-Linux-x64.tar.gz" \
+            "$(basename "$root")"
 
-      - name: Upload installer
+      - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: default_distortion-${{ matrix.artifact }}-installer
+          name: default_distortion-${{ matrix.artifact }}
           path: |
-            packages/*.exe
-            packages/*.pkg
-            packages/*.run
-          if-no-files-found: error
-
-      - name: Upload UI captures
-        uses: actions/upload-artifact@v7
-        with:
-          name: default_distortion-${{ matrix.artifact }}-ui-captures
-          path: |
-            build/ui-captures/*.png
+            packages/*.zip
+            packages/*.tar.gz
           if-no-files-found: error
 
   release:
@@ -250,11 +196,6 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-          pattern: default_distortion-*-installer
-
-      - name: Create checksums
-        working-directory: release-assets
-        run: sha256sum * > SHA256SUMS
 
       - name: Create or update GitHub release
         env:
