@@ -28,6 +28,7 @@ public:
     [[nodiscard]] int getBaseLatencySamples (bool linearPhase) const noexcept;
     [[nodiscard]] float getSmartAutoGainProgress() const noexcept;
     [[nodiscard]] bool isSmartAutoGainLocked() const noexcept;
+    [[nodiscard]] float getSmartAutoGainDb() const noexcept;
 
     static int slopeDecibelsPerOctave (int slopeIndex) noexcept;
 

@@ -836,6 +836,14 @@ std::uint64_t hashParameters (const Parameters& master,
     add (static_cast<std::uint32_t> (multiband.bandCount));
     add (static_cast<std::uint32_t> (multiband.phaseMode));
     add (static_cast<std::uint32_t> (master.quality));
+    add (std::bit_cast<std::uint32_t> (
+        master.transientStrengthPercent));
+    add (std::bit_cast<std::uint32_t> (
+        master.transientBalancePercent));
+    add (std::bit_cast<std::uint32_t> (
+        master.transientHoldPercent));
+    add (std::bit_cast<std::uint32_t> (
+        master.transientSmoothPercent));
     for (int edge = 0; edge < multiband.bandCount - 1; ++edge)
     {
         add (std::bit_cast<std::uint32_t> (
@@ -867,6 +875,8 @@ std::uint64_t hashParameters (const Parameters& master,
             values.saturation.speedPercent));
         add (std::bit_cast<std::uint32_t> (
             values.saturation.inputHpHz));
+        add (static_cast<std::uint32_t> (
+            values.saturation.inputHpDetector));
         add (std::bit_cast<std::uint32_t> (
             values.saturation.outputLpHz));
         add (static_cast<std::uint32_t> (values.bypass));
@@ -922,6 +932,7 @@ struct MultibandProcessor::Impl
     bool wasSolo = false;
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };
+    std::atomic<float> smartGainDbForUi { 0.0f };
 
     void prepareWeighting()
     {
@@ -951,6 +962,11 @@ struct MultibandProcessor::Impl
         smartLocked = false;
         smartProgress.store (0.0f, std::memory_order_relaxed);
         smartLockedForUi.store (false, std::memory_order_relaxed);
+        smartGainDbForUi.store (
+            juce::Decibels::gainToDecibels (
+                preserveGain ? smartGain.getCurrentValue() : 1.0f,
+                -100.0f),
+            std::memory_order_relaxed);
         for (auto& filter : dryWeighting)
             filter.reset();
         for (auto& filter : wetWeighting)
@@ -958,6 +974,11 @@ struct MultibandProcessor::Impl
         if (! preserveGain)
         {
             smartGain.setCurrentAndTargetValue (1.0f);
+        }
+        else
+        {
+            smartGain.setCurrentAndTargetValue (
+                smartGain.getCurrentValue());
         }
     }
 
@@ -980,7 +1001,7 @@ struct MultibandProcessor::Impl
             bandLatency + maximumRoutingLatency + linearBank.groupDelay
                 + maximumBlockSize * 2 + 16);
         prepareWeighting();
-        smartGain.reset (sampleRate, 0.02);
+        smartGain.reset (sampleRate, 0.15);
         smartGain.setCurrentAndTargetValue (1.0f);
         restartSmartMeasurement (false);
     }
@@ -1084,6 +1105,10 @@ struct MultibandProcessor::Impl
                 output.setSample (
                     channel, sample, output.getSample (channel, sample) * gain);
         }
+        smartGainDbForUi.store (
+            juce::Decibels::gainToDecibels (
+                smart ? smartGain.getCurrentValue() : 1.0f, -100.0f),
+            std::memory_order_relaxed);
     }
 
     void process (juce::AudioBuffer<float>& buffer,
@@ -1142,6 +1167,8 @@ struct MultibandProcessor::Impl
                 multiband.crossoverHz, multiband.crossoverSlope);
 
         buffer.clear();
+        const auto* linkedDetectorInput = detectorInput != nullptr
+            ? detectorInput : &dryReference;
         const float* sharedDynamicOffsets = nullptr;
         auto sharedDynamicSamples = -1;
         for (int band = 0; band < activeBands; ++band)
@@ -1166,7 +1193,7 @@ struct MultibandProcessor::Impl
             engines[index].processBand (
                 bands[index],
                 values.saturation,
-                detectorInput,
+                multiband.linked ? linkedDetectorInput : nullptr,
                 routingLatency > 0,
                 sharedDynamicOffsets,
                 sharedDynamicSamples);
@@ -1278,6 +1305,11 @@ float MultibandProcessor::getSmartAutoGainProgress() const noexcept
 bool MultibandProcessor::isSmartAutoGainLocked() const noexcept
 {
     return impl->smartLockedForUi.load (std::memory_order_relaxed);
+}
+
+float MultibandProcessor::getSmartAutoGainDb() const noexcept
+{
+    return impl->smartGainDbForUi.load (std::memory_order_relaxed);
 }
 
 int MultibandProcessor::slopeDecibelsPerOctave (int slopeIndex) noexcept

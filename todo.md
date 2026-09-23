@@ -44,7 +44,7 @@ must not be used as the 0.9.0 layout reference.
 
   1. `DRIVE / CHARACTER / SECONDARY / ASYM + STEREO`
   2. `ROUTE / PLACEMENT / DYNAMIC / SPEED`
-  3. `INPUT HP / TONE / STAGES / OUTPUT LP`
+  3. `TONE / STAGES / INPUT HP / OUTPUT LP`
 
 - Build the utility strip as `MULTIBAND ON / LINK / PHASE / MIX / OUT`. `LINK`
   and `PHASE` align to the third and fourth control columns; the visible
@@ -81,15 +81,18 @@ must not be used as the 0.9.0 layout reference.
 
 ### Approved DSP decisions
 
-- Signal flow: `Input -> Input HP -> routing/saturation -> Auto Gain -> Mix ->
-  Output LP -> global Output`.
+- Signal flow with Input HP routed to audio: `Input -> Input HP ->
+  routing/saturation -> Auto Gain -> Mix -> Output LP -> global Output`.
+- The Input HP `D` button moves that filter from the main audio path to the
+  Dynamic detector path without filtering the audible input.
 - `INPUT HP`: third-order Butterworth, 18 dB/oct, `OFF / 0 Hz` through
-  `200 Hz`.
+  `2 kHz`.
 - `OUTPUT LP`: third-order Butterworth, 18 dB/oct, `2 kHz` through
   `20 kHz / OFF`.
-- The Dynamic detector is a stereo-linked peak envelope follower fed by the
-  complete raw plug-in input before routing or multiband splitting. Unlinked
-  bands use independent follower state while receiving the same detector tap.
+- The Dynamic detector is a stereo-linked peak envelope follower. Linked
+  Multiband uses the complete raw Single-band detector; unlinked bands use
+  independent follower state fed by their own split signals. Input HP can be
+  routed to these detector feeds with the `D` button.
 - `SPEED` uses the exact `default_eq` 0.5.3 logarithmic timing curve:
   `0% = 100/1000 ms`, `50% = 10/100 ms`, `100% = 0.1/15 ms`
   (attack/release).
@@ -151,6 +154,8 @@ must not be used as the 0.9.0 layout reference.
 
 - Add logarithmic `INPUT HP` and `OUTPUT LP` cutoff parameters to the master
   context and every multiband saturation context.
+- Add an automatable per-context Input HP route, defaulting to the main audio
+  path; its in-control `D` button selects the Dynamic detector path.
 - `INPUT HP` belongs before the saturation core and `OUTPUT LP` belongs after it.
   Decide and approve their exact relationship to contextual Mix, Auto Gain, and
   final Output before implementation; document the resulting order in the
@@ -205,6 +210,51 @@ must not be used as the 0.9.0 layout reference.
   components that can be clipped by the plug-in editor.
 - [x] Remove old editor components only after feature, interaction, automation,
   accessibility, and state parity has passed for their replacement.
+
+## Post-redesign family settings and distortion analysis
+
+- [x] Open an in-editor settings overlay from the logo, containing only Theme,
+  White Background, White Ink, Black Background, and Black Ink controls.
+- [x] Share Theme mode and all four palette colours across `default_distortion`,
+  `default_eq`, and `default_allpass`, including live cross-plug-in refresh.
+- [x] Persist the distortion editor scale independently of audio/project state.
+- [x] Restore the visible Smart Auto Gain measurement animation and expose its
+  measuring/locked status plus the applied correction in the settings overlay.
+- [x] Add Crest Delta, Level Delta, and Tilt Delta diagnostics.
+- [x] Replace pre-FFT L/R sample summing with per-channel FFT power averaging so
+  anti-phase stereo content remains visible, and remove the synthetic idle RTA.
+- [x] Raise the lightweight editor-state refresh to 30 Hz, while keeping shared
+  settings disk polling throttled to 2 Hz and analyzer work visibility-gated.
+- [x] Run spectrum capture/FFT only for a visible RTA or open settings overlay,
+  run Crest/Level only while that overlay is open, and suspend hidden meter,
+  transfer-display, and editor refresh work without gating Smart Auto Gain.
+- [x] Cover settings lifecycle, persistence, Smart Gain progress, analyzer
+  statistics, anti-phase stereo, layout, and render output with regression tests.
+- [x] Strengthen Dynamic at ordinary input levels with a perceptual detector
+  mapping while preserving the neutral point, endpoints, timing, and smoothing.
+- [x] In Multiband, use the shared full-range Single-band detector while linked;
+  when unlinked, derive each band's Dynamic envelope from its own split signal.
+- [x] Derive one T/S mask from the dry reference, apply it to dry and wet, use
+  the default_eq hold/smooth defaults, and keep Auto Gain off the unselected
+  dry component.
+- [x] Keep per-band Solo/Bypass controls attached to their live crossover
+  positions during drag and automation.
+- [x] Prevent right-click reset from entering the vertical drag path, including
+  clicks in the lower half of the rectangular control.
+- [x] Use ASCII `2X`/`4X`/`8X` labels throughout the OS selector and popup so
+  host/source encoding cannot corrupt the multiplication glyph.
+- [x] Replace the DISTORTION%, Width Delta, and Clip logo-menu widgets with
+  global automatable T/S Strength, Balance, Hold, and Smooth controls.
+- [x] Draw active numeric-entry fields with a one-pixel outline.
+- [x] Default a never-scaled distortion editor to 1.25x while preserving every
+  subsequently saved user scale.
+- [x] Reorder the lower control row to Tone, Stages, Input HP, Output LP.
+- [x] Extend Input HP to 2 kHz and add its per-context audio/detector route,
+  including linked full-range and unlinked per-band Dynamic detector tests.
+- [x] Port Vital's Hard Clip transfer-view domain and draw scale so the preview
+  no longer shows false edge plateaus at zero Drive.
+- [x] Update the MULTIBAND panel and LINK visual state immediately on click,
+  without waiting for editor polling, and cover both interactions by test.
 
 ## Lessons from the default_eq interface migration
 
@@ -304,7 +354,10 @@ These are mandatory safeguards, not optional retrospective notes.
 ## Resolved DSP decisions
 
 - Input HP and Output LP use third-order Butterworth filters at 18 dB/oct.
-- Input HP is `OFF/0…200 Hz`; Output LP is `2 kHz…20 kHz/OFF`.
+- Input HP is `OFF/0…2 kHz`; Output LP is `2 kHz…20 kHz/OFF`.
+- Input HP defaults to the audio path; its `D` button routes it only to the
+  Dynamic detector. Linked mode filters the shared full-range detector and
+  unlinked mode filters each band's detector independently.
 - The approved signal path is documented in `docs/architecture-0.9.md`.
 - Speed uses the approved `default_eq` 0.5.3 attack/release curve documented
   above and in `docs/architecture-0.9.md`.

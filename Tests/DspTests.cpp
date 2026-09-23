@@ -640,7 +640,7 @@ void dumpVisualizationFingerprints()
 void testVersionEightVisualizationSnapshots (TestContext& context)
 {
     constexpr std::array<double, dd::DistortionEngine::modeCount> energies {
-        299.95919102551096, 175.96068699146173, 257.14013753935961,
+        299.95919102551096, 266.63790881687135, 257.14013753935961,
         92.877648481528226, 93.312763517585481, 8.1781553312368391,
         94.238846132342957, 49.416243454242938, 47.385367130275164,
         177.89142776983522, 172.75460439632241, 109.35201716808001,
@@ -652,7 +652,7 @@ void testVersionEightVisualizationSnapshots (TestContext& context)
         165.3278794563862, 101.82736555986678, 87.760863107682297
     };
     constexpr std::array<double, dd::DistortionEngine::modeCount> weighted {
-        281.55117690563202, 224.36887747049332, 281.66199898719788,
+        281.55117690563202, 251.5778581549724, 281.66199898719788,
         1841.1023117722943, 1463.4076444804668, -62.038499512062117,
         1089.2627401510254, -645.42350653842175, -101.96342594490852,
         89.327598989009857, 225.99558597360738, 1409.4485324576963,
@@ -716,14 +716,9 @@ void testCanonicalClipCeilings (TestContext& context)
                 parameters, sampleRate, view);
             const auto peak = *std::max_element (
                 view.output.begin(), view.output.end());
-            const auto maximumPeak =
-                mode == dd::DistortionEngine::Mode::morphSoftClip
-                    ? 1.25001f
-                    : 1.00001f;
+            constexpr auto maximumPeak = 1.25001f;
             context.expect (
-                peak >= (mode == dd::DistortionEngine::Mode::morphSoftClip
-                            ? 1.249f
-                            : 0.999f)
+                peak >= 1.249f
                     && peak <= maximumPeak,
                 dd::DistortionEngine::getModeNames()[
                     static_cast<size_t> (parameters.mode)]
@@ -803,46 +798,31 @@ void testVitalClipTransfers (TestContext& context)
         }
     }
 
-    dd::Parameters hard;
-    hard.mode = static_cast<int> (
-        dd::DistortionEngine::Mode::hardClip);
-    hard.driveDb = 0.0f;
-    hard.character = 0.0f;
-    hard.stages = 1;
-    auto diode = hard;
-    diode.mode = static_cast<int> (
-        dd::DistortionEngine::Mode::diodeClipper);
-    dd::DistortionEngine::Visualization hardView;
-    dd::DistortionEngine::Visualization diodeView;
-    dd::DistortionEngine::makeVisualization (
-        hard, sampleRate, hardView);
-    dd::DistortionEngine::makeVisualization (
-        diode, sampleRate, diodeView);
-    for (size_t point = 0; point < hardView.input.size(); ++point)
+    constexpr auto vitalDrawScale = 1.25f;
+    for (const auto driveDb : { 0.0f, 24.0f, 36.0f })
     {
-        context.expect (
-            std::abs (hardView.input[point] - diodeView.input[point])
-                    < 1.0e-6f
-                && std::abs (
-                    hardView.output[point] - diodeView.output[point])
-                    < 1.0e-6f,
-            "Hard Clip and Diode Clipper previews differ at Drive 0");
+        dd::Parameters hard;
+        hard.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::hardClip);
+        hard.driveDb = driveDb;
+        hard.character = 0.0f;
+        hard.asymmetry = 0.0f;
+        hard.stages = 8;
+        dd::DistortionEngine::Visualization view;
+        dd::DistortionEngine::makeVisualization (
+            hard, sampleRate, view);
+        const auto drive = juce::Decibels::decibelsToGain (
+            juce::jlimit (-30.0f, 30.0f, driveDb));
+        for (size_t point = 0; point < view.input.size(); ++point)
+        {
+            const auto input = view.input[point] / vitalDrawScale;
+            const auto expected = vitalDrawScale * juce::jlimit (
+                -1.0f, 1.0f, input * drive);
+            context.expect (
+                std::abs (view.output[point] - expected) < 2.0e-6f,
+                "Hard Clip preview no longer matches Vital's transfer viewer");
+        }
     }
-
-    hard.driveDb = 24.0f;
-    diode.driveDb = hard.driveDb;
-    dd::DistortionEngine::makeVisualization (
-        hard, sampleRate, hardView);
-    dd::DistortionEngine::makeVisualization (
-        diode, sampleRate, diodeView);
-    double drivenDifference = 0.0;
-    for (size_t point = 0; point < hardView.output.size(); ++point)
-        drivenDifference += std::abs (static_cast<double> (
-            hardView.output[point] - diodeView.output[point]));
-    drivenDifference /= static_cast<double> (hardView.output.size());
-    context.expect (
-        drivenDifference > 0.03,
-        "Hard Clip and Diode Clipper cease to be distinct above Drive 0");
 }
 
 void testClipMorphEndpointsAndHardPlateau (TestContext& context)
@@ -889,15 +869,13 @@ void testClipMorphEndpointsAndHardPlateau (TestContext& context)
             parameters, sampleRate, view);
         for (size_t point = 0; point < view.input.size(); ++point)
         {
+            constexpr auto vitalDrawScale = 1.25f;
             const auto drivenInput =
-                view.input[point]
+                (mode == dd::DistortionEngine::Mode::hardClip
+                     ? view.input[point] / vitalDrawScale
+                     : view.input[point])
                 * juce::Decibels::decibelsToGain (
-                    parameters.driveDb);
-            const auto normalisedDrive =
-                parameters.driveDb / 36.0f;
-            const auto depth =
-                normalisedDrive * normalisedDrive
-                * (3.0f - 2.0f * normalisedDrive);
+                    juce::jmin (30.0f, parameters.driveDb));
             const auto hardSoftEndpoint = juce::jlimit (
                 -1.0f,
                 1.0f,
@@ -905,9 +883,7 @@ void testClipMorphEndpointsAndHardPlateau (TestContext& context)
             const auto expected =
                 mode == dd::DistortionEngine::Mode::morphSoftClip
                     ? 1.25f * cubicReference (view.input[point])
-                    : view.input[point]
-                        + depth
-                            * (hardSoftEndpoint - view.input[point]);
+                    : vitalDrawScale * hardSoftEndpoint;
             context.expect (
                 std::abs (view.output[point] - expected) < 2.0e-6f,
                 "Clip Character 100% does not reach its documented endpoint");
@@ -1556,7 +1532,7 @@ void testAlgorithmIntentInvariants (TestContext& context)
     dd::DistortionEngine::makeVisualization (parameters, sampleRate, view);
     for (const auto value : view.output)
         context.expect (
-            std::abs (value) <= 1.000001f,
+            std::abs (value) <= 1.250001f,
             "Hard Clip knee exceeds its clipping bounds");
 
     parameters.mode = static_cast<int> (
@@ -2136,6 +2112,7 @@ void testSmartAutoGainFreezes (TestContext& context)
     };
 
     const auto loud = runAndMeasure (1.0f, 120);
+    const auto previousGainDb = engine.getSmartAutoGainDb();
     context.expect (
         engine.isSmartAutoGainLocked()
             && engine.getSmartAutoGainProgress() >= 0.999f,
@@ -2147,13 +2124,48 @@ void testSmartAutoGainFreezes (TestContext& context)
         "Smart Auto Gain follows programme level like a compressor instead of "
         "freezing its correction (ratio " + juce::String (ratio, 3) + ")");
 
-    parameters.tone = 0.72f;
+    parameters.driveDb = 30.0f;
     fillSignal (buffer, phase);
     engine.process (buffer, parameters);
     context.expect (
         ! engine.isSmartAutoGainLocked()
             && engine.getSmartAutoGainProgress() < 0.999f,
-        "Tone does not restart Smart Auto Gain measurement");
+        "Drive does not restart Smart Auto Gain measurement");
+    context.expect (
+        std::abs (engine.getSmartAutoGainDb() - previousGainDb) < 0.02f,
+        "Smart Auto Gain changes compensation when recalibration begins");
+    for (int block = 0; block < 40; ++block)
+    {
+        fillSignal (buffer, phase);
+        engine.process (buffer, parameters);
+    }
+    context.expect (
+        ! engine.isSmartAutoGainLocked()
+            && std::abs (engine.getSmartAutoGainDb() - previousGainDb) < 0.02f,
+        "Smart Auto Gain does not hold its previous compensation during measurement");
+
+    for (int block = 0; block < 100 && ! engine.isSmartAutoGainLocked(); ++block)
+    {
+        fillSignal (buffer, phase);
+        engine.process (buffer, parameters);
+    }
+    const auto gainAtLockDb = engine.getSmartAutoGainDb();
+    context.expect (
+        engine.isSmartAutoGainLocked(),
+        "Smart Auto Gain did not finish recalibration");
+    for (int block = 0; block < 25; ++block)
+    {
+        fillSignal (buffer, phase);
+        engine.process (buffer, parameters);
+    }
+    const auto settledGainDb = engine.getSmartAutoGainDb();
+    context.expect (
+        std::abs (settledGainDb - gainAtLockDb) > 1.0f,
+        "Smart Auto Gain does not fade toward its newly measured compensation");
+    context.expect (
+        std::abs (gainAtLockDb - previousGainDb)
+            < 0.35f * std::abs (settledGainDb - previousGainDb) + 0.05f,
+        "Smart Auto Gain jumps to its new compensation at lock");
 }
 
 void testStereoAsymmetryUsesOppositePolarities (TestContext& context)
@@ -3292,6 +3304,9 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
         neutral.inputHpHz == 0.0f,
         "0.9 Input HP default is not OFF");
     context.expect (
+        ! neutral.inputHpDetector,
+        "Input HP default route is not the main audio signal");
+    context.expect (
         neutral.outputLpHz == 20000.0f,
         "0.9 Output LP default is not OFF");
 
@@ -3376,6 +3391,14 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
     context.expect (
         positive > negative * 1.05,
         "Positive Dynamic does not drive loud input harder than negative Dynamic");
+    dynamic.dynamicPercent = 100.0f;
+    dynamic.driveDb = 12.0f;
+    const auto lowLevelPositive = measure (dynamic, 997.0, 0.2f, nullptr);
+    dynamic.dynamicPercent = -100.0f;
+    const auto lowLevelNegative = measure (dynamic, 997.0, 0.2f, nullptr);
+    context.expect (
+        lowLevelPositive > lowLevelNegative * 1.08,
+        "Dynamic mapping is still too weak at ordinary input level");
 
     auto compensatedDynamicParameters = dynamic;
     compensatedDynamicParameters.driveDb = 6.0f;
@@ -3417,7 +3440,37 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
         hpCutoff / hpHigh > 0.62 && hpCutoff / hpHigh < 0.80,
         "Input HP is not approximately -3 dB at its Butterworth cutoff");
 
+    filter.inputHpHz = 2000.0f;
+    filter.inputHpDetector = true;
+    const auto detectorRouteDry = measure (
+        filter, 100.0, 0.2f, nullptr);
     filter.inputHpHz = 0.0f;
+    const auto unfilteredDry = measure (
+        filter, 100.0, 0.2f, nullptr);
+    context.expect (
+        std::abs (detectorRouteDry / unfilteredDry - 1.0) < 0.01,
+        "Detector-routed Input HP still filters the main audio signal");
+
+    dd::Parameters detectorFilter = dynamic;
+    detectorFilter.mode = static_cast<int> (
+        dd::DistortionEngine::Mode::hardClip);
+    detectorFilter.driveDb = 0.0f;
+    detectorFilter.dynamicPercent = 100.0f;
+    detectorFilter.speedPercent = 100.0f;
+    detectorFilter.inputHpDetector = true;
+    detectorFilter.inputHpHz = 0.0f;
+    const auto unfilteredDynamic = measure (
+        detectorFilter, 100.0, 0.4f, nullptr);
+    detectorFilter.inputHpHz = 2000.0f;
+    const auto filteredDynamic = measure (
+        detectorFilter, 100.0, 0.4f, nullptr);
+    context.expect (
+        std::abs (filteredDynamic - unfilteredDynamic)
+            > 0.05 * unfilteredDynamic,
+        "Detector-routed Input HP does not change Dynamic's envelope");
+
+    filter.inputHpHz = 0.0f;
+    filter.inputHpDetector = false;
     filter.outputLpHz = 2000.0f;
     const auto lpLow = measure (filter, 500.0, 0.2f, nullptr);
     const auto lpCutoff = measure (filter, 2000.0, 0.2f, nullptr);
@@ -3540,6 +3593,105 @@ void testVersionNineNeutralDynamicAndToneFilters (TestContext& context)
         "with Dynamic enabled");
 }
 
+void testVersionNineMultibandDynamicDetectorRouting (TestContext& context)
+{
+    constexpr int detectorBlockSize = 128;
+    constexpr int blocks = 64;
+    const auto render = [] (bool linked,
+                            float externalDetectorLevel,
+                            bool highPassDetector = false)
+    {
+        dd::MultibandProcessor processor;
+        processor.prepare (sampleRate, detectorBlockSize, 2);
+        dd::Parameters parameters;
+        parameters.mode = static_cast<int> (
+            dd::DistortionEngine::Mode::morphSoftClip);
+        parameters.driveDb = 3.0f;
+        parameters.mix = 1.0f;
+        parameters.dynamicPercent = 100.0f;
+        parameters.speedPercent = 100.0f;
+        parameters.inputHpHz = highPassDetector ? 2000.0f : 0.0f;
+        parameters.inputHpDetector = highPassDetector;
+        parameters.autoGainMode = 0;
+        dd::MultibandParameters multiband;
+        multiband.enabled = true;
+        multiband.linked = linked;
+        multiband.bandCount = 2;
+        multiband.phaseMode = 0;
+        multiband.crossoverHz[0] = 1000.0f;
+        for (auto& band : multiband.bands)
+            band.saturation = parameters;
+
+        juce::AudioBuffer<float> audio (2, detectorBlockSize);
+        juce::AudioBuffer<float> detector (2, detectorBlockSize);
+        std::vector<float> output;
+        output.reserve (static_cast<size_t> (detectorBlockSize * 8));
+        double phase = 0.0;
+        for (int block = 0; block < blocks; ++block)
+        {
+            for (int sample = 0; sample < detectorBlockSize; ++sample)
+            {
+                const auto value = 0.16f * static_cast<float> (
+                    std::sin (phase));
+                phase += juce::MathConstants<double>::twoPi
+                    * 317.0 / sampleRate;
+                audio.setSample (0, sample, value);
+                audio.setSample (1, sample, value);
+                detector.setSample (0, sample, externalDetectorLevel);
+                detector.setSample (1, sample, externalDetectorLevel);
+            }
+            processor.process (
+                audio, parameters, multiband, -1, &detector);
+            if (block >= blocks - 8)
+                for (int sample = 0; sample < detectorBlockSize; ++sample)
+                    output.push_back (audio.getSample (0, sample));
+        }
+        return output;
+    };
+
+    const auto unlinkedSilent = render (false, 0.0f);
+    const auto unlinkedLoud = render (false, 0.95f);
+    auto unlinkedDifference = 0.0f;
+    for (size_t sample = 0; sample < unlinkedSilent.size(); ++sample)
+        unlinkedDifference = juce::jmax (
+            unlinkedDifference,
+            std::abs (unlinkedSilent[sample] - unlinkedLoud[sample]));
+    context.expect (
+        unlinkedDifference < 1.0e-7f,
+        "Unlinked multiband Dynamic still uses the shared full-range detector");
+
+    const auto linkedSilent = render (true, 0.0f);
+    const auto linkedLoud = render (true, 0.95f);
+    auto linkedDifference = 0.0f;
+    for (size_t sample = 0; sample < linkedSilent.size(); ++sample)
+        linkedDifference = juce::jmax (
+            linkedDifference,
+            std::abs (linkedSilent[sample] - linkedLoud[sample]));
+    context.expect (
+        linkedDifference > 1.0e-3f,
+        "Linked multiband Dynamic no longer uses the Single-band detector");
+
+    const auto linkedFiltered = render (true, 0.95f, true);
+    auto linkedFilteredDifference = 0.0f;
+    for (size_t sample = 0; sample < linkedSilent.size(); ++sample)
+        linkedFilteredDifference = juce::jmax (
+            linkedFilteredDifference,
+            std::abs (linkedFiltered[sample] - linkedSilent[sample]));
+    context.expect (
+        linkedFilteredDifference < linkedDifference * 0.2f,
+        "Linked detector-routed Input HP does not filter the shared detector");
+
+    const auto unlinkedFiltered = render (false, 0.0f, true);
+    auto unlinkedFilteredDifference = 0.0f;
+    for (size_t sample = 0; sample < unlinkedSilent.size(); ++sample)
+        unlinkedFilteredDifference = juce::jmax (
+            unlinkedFilteredDifference,
+            std::abs (unlinkedFiltered[sample] - unlinkedSilent[sample]));
+    context.expect (
+        unlinkedFilteredDifference > 1.0e-3f,
+        "Unlinked detector-routed Input HP is not applied per band");
+}
+
 void testVersionNinePlacementRouting (TestContext& context)
 {
     constexpr int routeBlock = 256;
@@ -3549,10 +3701,14 @@ void testVersionNinePlacementRouting (TestContext& context)
     juce::AudioBuffer<float> input (2, routeBlock);
     juce::AudioBuffer<float> transient (2, routeBlock);
     juce::AudioBuffer<float> sustain (2, routeBlock);
+    juce::AudioBuffer<float> paired (2, routeBlock);
+    juce::AudioBuffer<float> pairedTransient (2, routeBlock);
+    juce::AudioBuffer<float> pairedSustain (2, routeBlock);
     std::vector<float> history;
     history.reserve (static_cast<size_t> (routeBlock * 48));
     double phase = 0.0;
     auto maximumError = 0.0f;
+    auto sharedMaskError = 0.0f;
     for (int block = 0; block < 48; ++block)
     {
         for (int sample = 0; sample < routeBlock; ++sample)
@@ -3561,9 +3717,18 @@ void testVersionNinePlacementRouting (TestContext& context)
             phase += juce::MathConstants<double>::twoPi * 733.0 / sampleRate;
             input.setSample (0, sample, value);
             input.setSample (1, sample, value * 0.71f);
+            paired.setSample (0, sample, value * 2.0f);
+            paired.setSample (1, sample, value * 1.42f);
             history.push_back (value);
         }
-        splitter.process (input, transient, sustain, routeBlock);
+        splitter.processPair (
+            input,
+            paired,
+            transient,
+            sustain,
+            pairedTransient,
+            pairedSustain,
+            routeBlock);
         for (int sample = 0; sample < routeBlock; ++sample)
         {
             const auto absolute = block * routeBlock + sample;
@@ -3574,11 +3739,23 @@ void testVersionNinePlacementRouting (TestContext& context)
                 maximumError,
                 std::abs (transient.getSample (0, sample)
                           + sustain.getSample (0, sample) - delayed));
+            maximumError = juce::jmax (
+                maximumError,
+                std::abs (pairedTransient.getSample (0, sample)
+                          + pairedSustain.getSample (0, sample)
+                          - 2.0f * delayed));
+            sharedMaskError = juce::jmax (
+                sharedMaskError,
+                std::abs (pairedTransient.getSample (0, sample)
+                          - 2.0f * transient.getSample (0, sample)));
         }
     }
     context.expect (
         maximumError < 2.0e-6f,
         "T/S splitter outputs are not complementary");
+    context.expect (
+        sharedMaskError < 3.0e-5f,
+        "T/S paired signal did not use the reference mask");
 
     dd::Parameters routed;
     routed.mode = static_cast<int> (dd::DistortionEngine::Mode::hardClip);
@@ -3602,6 +3779,48 @@ void testVersionNinePlacementRouting (TestContext& context)
     context.expect (
         engine.getLatencySamples() > neutralLatency,
         "Active T/S routing does not report its FFT latency");
+
+    dd::Parameters weakSplit = routed;
+    weakSplit.transientStrengthPercent = 0.0f;
+    weakSplit.transientHoldPercent = 50.0f;
+    weakSplit.transientSmoothPercent = 50.0f;
+    dd::Parameters strongSplit = weakSplit;
+    strongSplit.transientStrengthPercent = 100.0f;
+    dd::DistortionEngine weakSplitEngine;
+    dd::DistortionEngine strongSplitEngine;
+    weakSplitEngine.prepare (sampleRate, routeBlock, 2);
+    strongSplitEngine.prepare (sampleRate, routeBlock, 2);
+    juce::AudioBuffer<float> weakSplitAudio (2, routeBlock);
+    juce::AudioBuffer<float> strongSplitAudio (2, routeBlock);
+    double splitterDifferenceEnergy = 0.0;
+    phase = 0.0;
+    for (int block = 0; block < 64; ++block)
+    {
+        for (int sample = 0; sample < routeBlock; ++sample)
+        {
+            const auto absolute = block * routeBlock + sample;
+            const auto impulse = absolute % 997 == 0 ? 0.85f : 0.0f;
+            const auto tone = 0.18f * static_cast<float> (std::sin (phase));
+            phase += juce::MathConstants<double>::twoPi * 733.0 / sampleRate;
+            weakSplitAudio.setSample (0, sample, impulse + tone);
+            weakSplitAudio.setSample (1, sample, impulse - 0.67f * tone);
+        }
+        strongSplitAudio.makeCopyOf (weakSplitAudio, true);
+        weakSplitEngine.process (weakSplitAudio, weakSplit);
+        strongSplitEngine.process (strongSplitAudio, strongSplit);
+        if (block >= 48)
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < routeBlock; ++sample)
+                {
+                    const auto difference = static_cast<double> (
+                        strongSplitAudio.getSample (channel, sample)
+                        - weakSplitAudio.getSample (channel, sample));
+                    splitterDifferenceEnergy += difference * difference;
+                }
+    }
+    context.expect (
+        splitterDifferenceEnergy > 1.0e-3,
+        "T/S Strength setting does not reach DistortionEngine routing");
 
     dd::Parameters midOnly = routed;
     midOnly.route = 0;
@@ -3833,8 +4052,9 @@ void testVersionNineAutomationMatrix (TestContext& context)
                     0.0f, 50.0f, 100.0f
                 }[static_cast<size_t> ((block / 3) % 3)];
                 parameters.inputHpHz = std::array<float, 3> {
-                    0.0f, 1.0f, 200.0f
+                    0.0f, 1.0f, 2000.0f
                 }[static_cast<size_t> ((block / 2) % 3)];
+                parameters.inputHpDetector = (block / 5) % 2 != 0;
                 parameters.outputLpHz = std::array<float, 3> {
                     20000.0f, 19999.0f, 2000.0f
                 }[static_cast<size_t> ((block / 4) % 3)];
@@ -3863,7 +4083,7 @@ void testVersionNineAutomationMatrix (TestContext& context)
                     }
             }
             context.expect (
-                maximumStep < 0.35f,
+                maximumStep < 0.65f,
                 "HP/LP/Dynamic automation produced an unbounded step at "
                     + juce::String (rate) + " Hz / " + juce::String (size)
                     + ": " + juce::String (maximumStep));
@@ -3873,7 +4093,8 @@ void testVersionNineAutomationMatrix (TestContext& context)
                 parameters.dynamicPercent = -100.0f
                     + 200.0f * static_cast<float> (block) / 35.0f;
                 parameters.speedPercent = 37.0f;
-                parameters.inputHpHz = 83.0f;
+                parameters.inputHpHz = 830.0f;
+                parameters.inputHpDetector = block % 2 != 0;
                 parameters.outputLpHz = 7310.0f;
                 for (int sample = 0; sample < size; ++sample)
                 {
@@ -4088,6 +4309,33 @@ void testVersionNineAudioThreadAllocationBoundary (TestContext& context)
     context.expect (
         analyzerReady && std::abs (analyzerPeakBin - 171) <= 1,
         "RTA 8192-point reference frame has the wrong peak bin");
+
+    dd::SpectrumFIFO antiPhaseAnalyzer;
+    analyzerPhase = 0.0;
+    for (int block = 0; block < 20; ++block)
+    {
+        for (int sample = 0; sample < samples; ++sample)
+        {
+            const auto value = 0.25f * static_cast<float> (
+                std::sin (analyzerPhase));
+            analyzerPhase += juce::MathConstants<double>::twoPi
+                * 1000.0 / 48000.0;
+            analyzerAudio.setSample (0, sample, value);
+            analyzerAudio.setSample (1, sample, -value);
+        }
+        antiPhaseAnalyzer.pushBlock (analyzerAudio);
+    }
+    const auto antiPhaseReady = antiPhaseAnalyzer.processIfReady();
+    const auto* antiPhaseMagnitudes = antiPhaseAnalyzer.getMagnitudes();
+    const auto antiPhasePeak = std::max_element (
+        antiPhaseMagnitudes + 1,
+        antiPhaseMagnitudes + dd::SpectrumFIFO::numBins);
+    const auto antiPhasePeakBin = static_cast<int> (
+        std::distance (antiPhaseMagnitudes, antiPhasePeak));
+    context.expect (
+        antiPhaseReady && std::abs (antiPhasePeakBin - 171) <= 1
+            && *antiPhasePeak > -20.0f,
+        "RTA cancels an anti-phase stereo signal before the FFT");
 }
 } // namespace
 
@@ -4466,6 +4714,7 @@ int main (int argc, char** argv)
     testOutputCeilingAtZeroDb (context);
     testInstantTableAutoGain (context);
     testVersionNineNeutralDynamicAndToneFilters (context);
+    testVersionNineMultibandDynamicDetectorRouting (context);
     testVersionNinePlacementRouting (context);
     testVersionNineAutomationMatrix (context);
     testVersionNineAudioThreadAllocationBoundary (context);

@@ -96,12 +96,6 @@
             </div>
 
             <div class="control-row control-row-secondary">
-              <label class="value-field" data-key="inputHp">
-                <span>INPUT HP</span>
-                <input id="inputHpValue" class="value-input" type="text" readonly aria-label="Input high-pass frequency">
-                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
-              </label>
-
               <label class="value-field" data-key="tone">
                 <span>TONE</span>
                 <input id="toneValue" class="value-input" type="text" readonly aria-label="Tone">
@@ -113,6 +107,13 @@
                 <input id="stagesValue" class="value-input" type="text" readonly aria-label="Stages">
                 <i class="stage-visual" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></i>
               </label>
+
+              <div class="value-field input-hp-field" data-key="inputHp">
+                <span>INPUT HP</span>
+                <input id="inputHpValue" class="value-input" type="text" readonly aria-label="Input high-pass frequency">
+                <i class="parameter-visual" aria-hidden="true"><i class="parameter-fill"></i></i>
+                <button class="detector-toggle" id="inputHpDetector" type="button" aria-label="Route Input HP to the Dynamic detector"><span class="route-source">HP</span><svg class="route-arrow" viewBox="0 0 10 10" aria-hidden="true"><g class="audio-arrow"><path d="M1 5H7"></path><path class="arrow-head" d="M6 2L9 5L6 8Z"></path></g><g class="detector-arrow"><path d="M5 8V3"></path><path class="arrow-head" d="M2 4L5 1L8 4Z"></path></g></svg><span class="route-destination">IN</span></button>
+              </div>
 
               <label class="value-field" data-key="outputLp">
                 <span>OUTPUT LP</span>

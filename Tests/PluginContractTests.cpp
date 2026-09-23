@@ -80,6 +80,19 @@ std::vector<juce::String> expectedVersionNineIds()
     for (int band = 0; band < 4; ++band)
         for (const auto* suffix : suffixes)
             result.push_back (dd::ParamIDs::band (band, suffix));
+    result.push_back (dd::ParamIDs::transientStrength);
+    result.push_back (dd::ParamIDs::transientBalance);
+    result.push_back (dd::ParamIDs::transientHold);
+    result.push_back (dd::ParamIDs::transientSmooth);
+    return result;
+}
+
+std::vector<juce::String> expectedVersionTenIds()
+{
+    std::vector<juce::String> result { dd::ParamIDs::inputHpDetector };
+    for (int band = 0; band < 4; ++band)
+        result.push_back (
+            dd::ParamIDs::band (band, "InputHpDetector"));
     return result;
 }
 
@@ -112,6 +125,18 @@ juce::Slider* findSlider (juce::Component& component,
     return nullptr;
 }
 
+template <typename ComponentType>
+ComponentType* findComponent (juce::Component& component)
+{
+    if (auto* match = dynamic_cast<ComponentType*> (&component))
+        return match;
+    for (int index = 0; index < component.getNumChildComponents(); ++index)
+        if (auto* match = findComponent<ComponentType> (
+                *component.getChildComponent (index)))
+            return match;
+    return nullptr;
+}
+
 juce::Button* findButton (juce::Component& component,
                           const juce::String& text)
 {
@@ -122,6 +147,31 @@ juce::Button* findButton (juce::Component& component,
         if (auto* button = findButton (
                 *component.getChildComponent (index), text))
             return button;
+    return nullptr;
+}
+
+dd::StripButton* findStripButton (juce::Component& component,
+                                  const juce::String& text)
+{
+    if (auto* button = dynamic_cast<dd::StripButton*> (&component))
+        if (button->getButtonText() == text)
+            return button;
+    for (int index = 0; index < component.getNumChildComponents(); ++index)
+        if (auto* button = findStripButton (
+                *component.getChildComponent (index), text))
+            return button;
+    return nullptr;
+}
+
+juce::Component* findNamedComponent (juce::Component& component,
+                                     const juce::String& name)
+{
+    if (component.getName() == name)
+        return &component;
+    for (int index = 0; index < component.getNumChildComponents(); ++index)
+        if (auto* match = findNamedComponent (
+                *component.getChildComponent (index), name))
+            return match;
     return nullptr;
 }
 
@@ -142,9 +192,11 @@ void testManifestAndDefaults (TestContext& context)
     dd::DefaultDistortionAudioProcessor processor;
     const auto oldIds = expectedVersionEightIds();
     const auto newIds = expectedVersionNineIds();
+    const auto newestIds = expectedVersionTenIds();
     const auto& parameters = processor.getParameters();
     context.expect (
-        parameters.size() == static_cast<int> (oldIds.size() + newIds.size()),
+        parameters.size() == static_cast<int> (
+            oldIds.size() + newIds.size() + newestIds.size()),
         "Unexpected parameter count");
 
     std::set<juce::String> uniqueIds;
@@ -157,9 +209,14 @@ void testManifestAndDefaults (TestContext& context)
             continue;
         const auto id = ranged->paramID;
         uniqueIds.insert (id);
-        const auto expected = index < static_cast<int> (oldIds.size())
-            ? oldIds[static_cast<size_t> (index)]
-            : newIds[static_cast<size_t> (index) - oldIds.size()];
+        juce::String expected;
+        if (index < static_cast<int> (oldIds.size()))
+            expected = oldIds[static_cast<size_t> (index)];
+        else if (index < static_cast<int> (oldIds.size() + newIds.size()))
+            expected = newIds[static_cast<size_t> (index) - oldIds.size()];
+        else
+            expected = newestIds[static_cast<size_t> (index)
+                                 - oldIds.size() - newIds.size()];
         context.expect (
             id == expected,
             "Parameter index " + juce::String (index)
@@ -181,15 +238,72 @@ void testManifestAndDefaults (TestContext& context)
                     "SPEED default is not 100%");
     context.expect (current.inputHpHz == 0.0f,
                     "INPUT HP default is not OFF");
+    context.expect (! current.inputHpDetector,
+                    "INPUT HP default route is not the audio path");
     context.expect (current.outputLpHz == 20000.0f,
                     "OUTPUT LP default is not OFF");
+    context.expect (
+        current.transientStrengthPercent == 100.0f
+            && std::abs (current.transientBalancePercent) < 0.001f
+            && current.transientHoldPercent == 50.0f
+            && current.transientSmoothPercent == 50.0f,
+        "T/S splitter defaults changed: "
+            + juce::String (current.transientStrengthPercent) + "/"
+            + juce::String (current.transientBalancePercent) + "/"
+            + juce::String (current.transientHoldPercent) + "/"
+            + juce::String (current.transientSmoothPercent));
 
     const auto* hp = parameterFor (processor, dd::ParamIDs::inputHp);
     const auto* lp = parameterFor (processor, dd::ParamIDs::outputLp);
     context.expect (hp != nullptr && hp->getText (0.0f, 32) == "OFF",
                     "INPUT HP endpoint is not labelled OFF");
+    context.expect (
+        hp != nullptr && hp->getText (1.0f, 32) == "2.00 kHz",
+        "INPUT HP maximum is not 2 kHz");
     context.expect (lp != nullptr && lp->getText (1.0f, 32) == "OFF",
                     "OUTPUT LP endpoint is not labelled OFF");
+}
+
+void testUpdatePolicyContract (TestContext& context)
+{
+    const auto newer = dd::update::compareVersions ("0.9.0", "v0.10.0");
+    const auto equal = dd::update::compareVersions ("0.9", "0.9.0");
+    const auto older = dd::update::compareVersions ("0.9.0", "v0.8.9");
+    const auto invalid = dd::update::compareVersions ("0.9.0", "latest");
+    context.expect (newer.has_value() && *newer > 0,
+                    "Update checker missed a newer minor version");
+    context.expect (equal.has_value() && *equal == 0,
+                    "Update checker does not normalize trailing zeroes");
+    context.expect (older.has_value() && *older < 0,
+                    "Update checker accepted an older version as newer");
+    context.expect (! invalid.has_value(),
+                    "Update checker accepted a non-version release tag");
+
+    constexpr std::int64_t now = 2'000'000'000'000LL;
+    context.expect (dd::update::isCheckDue (now, 0),
+                    "First update check is not due");
+    context.expect (! dd::update::isCheckDue (
+                        now, now + dd::update::retryAfterFailureMilliseconds),
+                    "Failed update check is retried before the next day");
+    context.expect (! dd::update::isCheckDue (
+                        now, now + dd::update::retryAfterSuccessMilliseconds),
+                    "Successful update check is retried before the next week");
+    context.expect (dd::update::isCheckDue (
+                        now, now + dd::update::retryAfterSuccessMilliseconds + 1),
+                    "Backward system-clock protection did not make the check due");
+
+    dd::GeometricLookAndFeel look;
+    dd::UpdateAvailableOverlay overlay;
+    overlay.setLookAndFeel (&look);
+    overlay.setBounds (0, 0, dd::ui::designWidth, dd::ui::compactHeight);
+    overlay.setLatestVersion ("0.10.0");
+    auto* open = findButton (overlay, "OPEN DEFAULT-AUDIO");
+    auto* later = findButton (overlay, "LATER");
+    context.expect (
+        open != nullptr && later != nullptr
+            && open->getBounds().getWidth() > later->getBounds().getWidth(),
+        "Styled update window buttons are missing or mis-sized");
+    overlay.setLookAndFeel (nullptr);
 }
 
 void testVersionFiveMigration (TestContext& context)
@@ -200,8 +314,10 @@ void testVersionFiveMigration (TestContext& context)
     setPlainValue (source, dd::ParamIDs::multibandLink, 0.0f);
     auto legacyState = source.parameters.copyState();
     const auto versionNineIds = expectedVersionNineIds();
-    const std::set<juce::String> newIds (
+    const auto versionTenIds = expectedVersionTenIds();
+    std::set<juce::String> newIds (
         versionNineIds.begin(), versionNineIds.end());
+    newIds.insert (versionTenIds.begin(), versionTenIds.end());
     for (int child = legacyState.getNumChildren() - 1; child >= 0; --child)
         if (newIds.contains (
                 legacyState.getChild (child).getProperty ("id").toString()))
@@ -218,6 +334,7 @@ void testVersionFiveMigration (TestContext& context)
     setPlainValue (restored, dd::ParamIDs::dynamic, -65.0f);
     setPlainValue (restored, dd::ParamIDs::speed, 4.0f);
     setPlainValue (restored, dd::ParamIDs::inputHp, 180.0f);
+    setPlainValue (restored, dd::ParamIDs::inputHpDetector, 1.0f);
     setPlainValue (restored, dd::ParamIDs::outputLp, 2400.0f);
     restored.setStateInformation (
         legacyBinary.getData(), static_cast<int> (legacyBinary.getSize()));
@@ -236,8 +353,16 @@ void testVersionFiveMigration (TestContext& context)
                     "v5 SPEED did not migrate to default");
     context.expect (current.inputHpHz == 0.0f,
                     "v5 INPUT HP did not migrate to OFF");
+    context.expect (! current.inputHpDetector,
+                    "v5 INPUT HP route did not migrate to audio");
     context.expect (current.outputLpHz == 20000.0f,
                     "v5 OUTPUT LP did not migrate to OFF");
+    context.expect (
+        current.transientStrengthPercent == 100.0f
+            && std::abs (current.transientBalancePercent) < 0.001f
+            && current.transientHoldPercent == 50.0f
+            && current.transientSmoothPercent == 50.0f,
+        "v5 T/S splitter settings did not migrate to defaults");
 
     const auto bands = restored.getCurrentMultibandParameters();
     for (int band = 0; band < dd::MultibandParameters::maximumBands; ++band)
@@ -252,6 +377,8 @@ void testVersionFiveMigration (TestContext& context)
                         "v5 band SPEED migration failed");
         context.expect (values.inputHpHz == 0.0f,
                         "v5 band INPUT HP migration failed");
+        context.expect (! values.inputHpDetector,
+                        "v5 band INPUT HP route migration failed");
         context.expect (values.outputLpHz == 20000.0f,
                         "v5 band OUTPUT LP migration failed");
     }
@@ -263,8 +390,8 @@ void testVersionFiveMigration (TestContext& context)
     context.expect (
         migratedXml != nullptr
             && migratedXml->getIntAttribute (
-                "defaultDistortionStateSchema", 0) == 6,
-        "Migrated state was not persisted as schema 6");
+                "defaultDistortionStateSchema", 0) == 8,
+        "Migrated state was not persisted as schema 8");
 }
 
 void testBooleanStateCanonicalization (TestContext& context)
@@ -317,9 +444,349 @@ void testLayoutContract (TestContext& context)
         dd::ui::meters.x + dd::ui::meters.width == dd::ui::response.x,
         "Meters/response divider is misaligned");
     context.expect (
+        dd::ui::oversampling.x == dd::ui::meters.x
+            && dd::ui::algorithmNext.x + dd::ui::algorithmNext.width
+                == dd::ui::meters.x,
+        "Algorithm/OS divider is misaligned with ASYM/meters");
+    context.expect (
         dd::ui::utilityCells[2].x + dd::ui::utilityCells[2].width
             == dd::ui::meters.x,
         "PHASE/MIX divider is misaligned with controls/meters");
+
+    dd::DefaultDistortionAudioProcessor processor;
+    processor.setRateAndBufferSizeDetails (48000.0, 128);
+    processor.prepareToPlay (48000.0, 128);
+    setPlainValue (processor, dd::ParamIDs::multibandEnabled, 1.0f);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
+    if (editor != nullptr)
+        editor->setSize (dd::ui::designWidth, dd::ui::expandedHeight);
+    if (editor != nullptr)
+    {
+        auto* dynamic = findSlider (*editor, "DYNAMIC");
+        auto* speed = findSlider (*editor, "SPEED");
+        auto* route = findButton (*editor, "ROUTE M/S");
+        auto* placement = findSlider (*editor, "PLACEMENT");
+        auto* tone = findSlider (*editor, "TONE");
+        auto* stages = findSlider (*editor, "STAGES");
+        auto* inputHp = findSlider (*editor, "INPUT HP");
+        auto* outputLp = findSlider (*editor, "OUTPUT LP");
+        context.expect (
+            dynamic != nullptr && speed != nullptr
+                && route != nullptr && placement != nullptr,
+            "Second-row controls are missing");
+        if (dynamic != nullptr && speed != nullptr
+            && route != nullptr && placement != nullptr)
+            context.expect (
+                route->getBounds()
+                        == juce::Rectangle<int> (4, 129, 100, 60)
+                    && placement->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (104, 129, 100, 60)
+                    && dynamic->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (204, 129, 100, 60)
+                    && speed->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (304, 129, 100, 60),
+                "Second-row order is not ROUTE/PLACEMENT/DYNAMIC/SPEED");
+        context.expect (
+            tone != nullptr && stages != nullptr
+                && inputHp != nullptr && outputLp != nullptr,
+            "Bottom-row controls are missing");
+        if (tone != nullptr && stages != nullptr
+            && inputHp != nullptr && outputLp != nullptr)
+            context.expect (
+                tone->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (4, 190, 100, 60)
+                    && stages->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (104, 190, 100, 60)
+                    && inputHp->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (204, 190, 100, 60)
+                    && outputLp->getParentComponent()->getBounds()
+                        == juce::Rectangle<int> (304, 190, 100, 60),
+                "Bottom-row order is not TONE/STAGES/INPUT HP/OUTPUT LP");
+    }
+    auto* panel = editor != nullptr
+        ? findComponent<dd::MultibandPanel> (*editor) : nullptr;
+    auto* secondSolo = editor != nullptr
+        ? findNamedComponent (*editor, "Band 2 Solo") : nullptr;
+    context.expect (panel != nullptr && secondSolo != nullptr,
+                    "Multiband live-layout controls are missing");
+    if (panel != nullptr && secondSolo != nullptr)
+    {
+        const auto before = secondSolo->getX();
+        const auto panelBounds = panel->getLocalBounds().toFloat().reduced (4.0f);
+        const auto crossover = processor.getCurrentMultibandParameters()
+            .crossoverHz[0];
+        const auto x = panelBounds.getX()
+            + std::log (crossover / 20.0f) / std::log (20000.0f / 20.0f)
+                * panelBounds.getWidth();
+        const auto source = juce::Desktop::getInstance().getMainMouseSource();
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent down (
+            source, { x, panelBounds.getCentreY() },
+            juce::ModifierKeys::leftButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            panel, panel, now, { x, panelBounds.getCentreY() }, now, 1, false);
+        panel->mouseDown (down);
+        const juce::MouseEvent drag (
+            source, { x + 80.0f, panelBounds.getCentreY() },
+            juce::ModifierKeys::leftButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            panel, panel, now, { x, panelBounds.getCentreY() }, now, 1, true);
+        panel->mouseDrag (drag);
+        context.expect (
+            secondSolo->getX() > before + 20,
+            "Band S/B buttons did not follow the crossover drag ("
+                + juce::String (before) + " -> "
+                + juce::String (secondSolo->getX()) + ", x "
+                + juce::String (x, 1) + ")");
+        panel->mouseUp (drag);
+    }
+}
+
+void testThemeAndSettingsContract (TestContext& context)
+{
+    context.expect (
+        std::abs (default_family::EditorPreferences::defaultScale - 1.25f)
+            < 0.001f,
+        "First-run editor scale is not 1.25x");
+    const auto originalTheme = default_family::ThemePreferences::load (true);
+    const auto originalScale = default_family::EditorPreferences::loadScale();
+    auto testTheme = originalTheme;
+    testTheme.mode = default_family::ThemePreferences::black;
+    testTheme.lightBackground = juce::Colour (0xffe8e7e6);
+    testTheme.darkForeground = juce::Colour (0xffd8d7d6);
+    default_family::ThemePreferences::save (testTheme);
+    const auto restoredTheme = default_family::ThemePreferences::load (true);
+    context.expect (
+        restoredTheme == testTheme,
+        "Shared default-family theme state did not round-trip");
+    default_family::EditorPreferences::saveScale (1.75f);
+    context.expect (
+        std::abs (default_family::EditorPreferences::loadScale() - 1.75f)
+            < 0.001f,
+        "Editor scale preference did not round-trip");
+
+    dd::DefaultDistortionAudioProcessor processor;
+    std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
+    context.expect (editor != nullptr, "Settings editor could not be created");
+    if (editor != nullptr)
+    {
+        editor->setSize (dd::ui::designWidth, dd::ui::compactHeight);
+        auto* overlay = findComponent<dd::DistortionSettingsOverlay> (*editor);
+        auto* brand = findButton (*editor, "default_distortion");
+        context.expect (overlay != nullptr && brand != nullptr,
+                        "Logo settings overlay components are missing");
+        if (overlay != nullptr && brand != nullptr && brand->onClick != nullptr)
+        {
+            context.expect (! overlay->isVisible(),
+                            "Settings overlay starts visible");
+            brand->onClick();
+            context.expect (
+                overlay->isVisible()
+                    && overlay->getBounds() == juce::Rectangle<int> (4, 68, 640, 182),
+                "Logo did not open the 640x182 settings overlay");
+            auto* strength = findSlider (*overlay, "T/S STRENGTH");
+            auto* balance = findSlider (*overlay, "T/S BALANCE");
+            auto* hold = findSlider (*overlay, "T/S HOLD");
+            auto* smooth = findSlider (*overlay, "T/S SMOOTH");
+            context.expect (
+                strength != nullptr && balance != nullptr
+                    && hold != nullptr && smooth != nullptr,
+                "Logo menu is missing T/S splitter controls");
+            if (strength != nullptr && balance != nullptr
+                && hold != nullptr && smooth != nullptr)
+            {
+                context.expect (
+                    strength->getValue() == 100.0
+                        && std::abs (balance->getValue()) < 0.001
+                        && hold->getValue() == 50.0
+                        && smooth->getValue() == 50.0,
+                    "Logo menu T/S controls do not expose DSP defaults");
+                context.expect (
+                    strength->getY() == 54 && strength->getBottom() == 118
+                        && smooth->getRight() == overlay->getWidth(),
+                    "Logo menu T/S control row geometry changed");
+                setPlainValue (
+                    processor, dd::ParamIDs::transientBalance, 25.0f);
+                context.expect (
+                    std::abs (balance->getValue() - 25.0) < 0.11,
+                    "T/S Balance control is not attached to APVTS");
+            }
+            brand->onClick();
+            context.expect (! overlay->isVisible(),
+                            "Second logo click did not close settings");
+        }
+    }
+    editor.reset();
+    default_family::ThemePreferences::save (originalTheme);
+    default_family::EditorPreferences::saveScale (originalScale);
+}
+
+void testUtilityStripInteractionContract (TestContext& context)
+{
+    dd::DefaultDistortionAudioProcessor processor;
+    setPlainValue (processor, dd::ParamIDs::multibandEnabled, 0.0f);
+    setPlainValue (processor, dd::ParamIDs::multibandLink, 1.0f);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
+    context.expect (editor != nullptr, "Editor could not be created");
+    if (editor == nullptr)
+        return;
+
+    editor->setSize (dd::ui::designWidth, dd::ui::compactHeight);
+    auto* response = findComponent<dd::ResponseDisplay> (*editor);
+    context.expect (
+        response != nullptr && response->isRefreshActive(),
+        "Response visualization refresh is not active before MULTIBAND toggle");
+
+    // At fractional UI scales, the utility background and its child buttons
+    // must meet on the same integer pixel. Otherwise the half-covered row is
+    // visible as a grey/white horizontal seam over the active LINK button.
+    editor->setSize (
+        juce::roundToInt (dd::ui::designWidth * 1.25f),
+        juce::roundToInt (dd::ui::compactHeight * 1.25f));
+    const auto fractional = editor->createComponentSnapshot (
+        editor->getLocalBounds(), true, 1.0f);
+    const auto scale = static_cast<float> (editor->getWidth())
+        / static_cast<float> (dd::ui::designWidth);
+    const auto linkCentreX = juce::roundToInt (
+        (dd::ui::utilityCells[1].x
+         + 0.5f * dd::ui::utilityCells[1].width) * scale);
+    const auto linkTop = juce::roundToInt (
+        dd::ui::utilityCells[1].y * scale);
+    context.expect (
+        fractional.getPixelAt (linkCentreX, linkTop - 1)
+            == fractional.getPixelAt (linkCentreX, linkTop),
+        "Fractional UI scale leaves a horizontal seam above LINK");
+    const auto headerDividerX = juce::roundToInt (573.0f * scale);
+    const auto headerMiddleY = juce::roundToInt (34.0f * scale);
+    context.expect (
+        fractional.getPixelAt (headerDividerX, headerMiddleY)
+            == fractional.getPixelAt (0, 0),
+        "Fractional UI scale antialiases the POWER divider");
+    const auto powerLeft = juce::roundToInt (dd::ui::power.x * scale);
+    context.expect (
+        fractional.getPixelAt (powerLeft - 1, headerMiddleY)
+            == fractional.getPixelAt (0, 0),
+        "Fractional UI scale leaves a white seam before POWER");
+
+    editor->setSize (dd::ui::designWidth, dd::ui::compactHeight);
+    auto* multiband = findStripButton (*editor, "MULTIBAND  OFF");
+    context.expect (multiband != nullptr, "MULTIBAND strip button is missing");
+    if (multiband != nullptr)
+    {
+        const auto source = juce::Desktop::getInstance().getMainMouseSource();
+        const auto now = juce::Time::getCurrentTime();
+        const auto centre = multiband->getLocalBounds().toFloat().getCentre();
+        const juce::MouseEvent down (
+            source, centre, juce::ModifierKeys::leftButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            multiband, multiband, now, centre, now, 1, false);
+        multiband->mouseDown (down);
+        context.expect (
+            multiband->getDisplayedToggleState(),
+            "MULTIBAND does not preview its enabled state on mouse-down");
+        multiband->mouseUp (down);
+        context.expect (
+            processor.getCurrentMultibandParameters().enabled,
+            "MULTIBAND mouse-up did not commit the enabled state");
+
+        const auto enabledCentre = multiband->getLocalBounds().toFloat().getCentre();
+        const juce::MouseEvent disableDown (
+            source, enabledCentre, juce::ModifierKeys::leftButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            multiband, multiband, now, enabledCentre, now, 1, false);
+        multiband->mouseDown (disableDown);
+        context.expect (
+            ! multiband->getDisplayedToggleState(),
+            "MULTIBAND does not preview its disabled state on mouse-down");
+        multiband->mouseUp (disableDown);
+
+        multiband->setToggleState (true, juce::sendNotification);
+        auto* panel = findComponent<dd::MultibandPanel> (*editor);
+        context.expect (
+            processor.getCurrentMultibandParameters().enabled
+                && panel != nullptr && panel->isVisible()
+                && editor->getHeight() == dd::ui::expandedHeight,
+            "MULTIBAND click did not expand the editor immediately");
+    }
+
+    auto* link = findStripButton (*editor, "LINK");
+    context.expect (link != nullptr, "LINK strip button is missing");
+    if (link != nullptr)
+    {
+        const auto source = juce::Desktop::getInstance().getMainMouseSource();
+        const auto now = juce::Time::getCurrentTime();
+        const auto centre = link->getLocalBounds().toFloat().getCentre();
+        const juce::MouseEvent down (
+            source, centre, juce::ModifierKeys::leftButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            link, link, now, centre, now, 1, false);
+        link->mouseDown (down);
+        context.expect (
+            ! link->getDisplayedToggleState(),
+            "LINK does not preview its disabled state on mouse-down");
+        link->mouseUp (down);
+        context.expect (
+            ! processor.getCurrentMultibandParameters().linked,
+            "LINK mouse-up did not commit the disabled state");
+
+        link->onClick();
+        context.expect (
+            processor.getCurrentMultibandParameters().linked
+                && link->getToggleState(),
+            "LINK re-enable did not update its visual state");
+    }
+
+    auto* detector = dynamic_cast<juce::Button*> (
+        findNamedComponent (*editor, "Input HP Detector"));
+    context.expect (detector != nullptr,
+                    "INPUT HP detector-routing button is missing");
+    if (detector != nullptr)
+    {
+        context.expect (
+            detector->getBounds()
+                == juce::Rectangle<int> (260, 177, 14, 24),
+            "INPUT HP audio-route button geometry changed: "
+                + detector->getBounds().toString());
+        context.expect (
+            ! detector->getToggleState()
+                && ! processor.getCurrentParameters().inputHpDetector,
+            "INPUT HP route does not default to audio input");
+        context.expect (detector->isOpaque(),
+                        "INPUT HP route button is not opaque");
+        detector->setToggleState (true, juce::sendNotification);
+        context.expect (
+            processor.getCurrentParameters().inputHpDetector
+                && detector->getToggleState()
+                && detector->getButtonText().contains ("DYN"),
+            "INPUT HP detector route did not update parameter and UI state");
+    }
+}
+
+void testSmartGainAnimationContract (TestContext& context)
+{
+    dd::GeometricLookAndFeel look;
+    look.setInverted (true);
+    dd::SmartGainButton button;
+    button.setLookAndFeel (&look);
+    button.setBounds (0, 0, 110, 60);
+    button.setValueText ("SMART");
+    button.setLoadingState (0.20f, true);
+    const auto early = button.createComponentSnapshot (
+        button.getLocalBounds(), true, 1.0f);
+    button.setLoadingState (0.80f, true);
+    const auto late = button.createComponentSnapshot (
+        button.getLocalBounds(), true, 1.0f);
+    auto changed = false;
+    for (int y = 54; ! changed && y < 59; ++y)
+        for (int x = 5; x < 105; ++x)
+            if (early.getPixelAt (x, y) != late.getPixelAt (x, y))
+            {
+                changed = true;
+                break;
+            }
+    context.expect (changed,
+                    "Smart Auto Gain progress animation is not visible");
+    button.setLookAndFeel (nullptr);
 }
 
 void testSliderInteractionContract (TestContext& context)
@@ -374,6 +841,29 @@ void testSliderInteractionContract (TestContext& context)
             slider->getValue() > start,
             juce::String (name) + " did not respond to vertical drag");
         slider->mouseUp (vertical);
+
+        slider->setValue (
+            slider->getMinimum()
+                + 0.25 * (slider->getMaximum() - slider->getMinimum()),
+            juce::dontSendNotification);
+        const auto resetValue = slider->getDoubleClickReturnValue();
+        const juce::MouseEvent rightDown (
+            source, { 10.0f, 50.0f },
+            juce::ModifierKeys::rightButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            slider, slider, now, { 10.0f, 50.0f }, now, 1, false);
+        slider->mouseDown (rightDown);
+        const juce::MouseEvent rightDrag (
+            source, { 10.0f, 5.0f },
+            juce::ModifierKeys::rightButtonModifier,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+            slider, slider, now, { 10.0f, 50.0f }, now, 1, true);
+        slider->mouseDrag (rightDrag);
+        context.expect (
+            std::abs (slider->getValue() - resetValue) < 0.0001,
+            juce::String (name)
+                + " right-click reset was overwritten by a drag");
+        slider->mouseUp (rightDrag);
     }
 
     const auto* mixHit = editor->getComponentAt (
@@ -394,6 +884,7 @@ void testPopupLifecycleContract (TestContext& context)
 {
     dd::DefaultDistortionAudioProcessor processor;
     setPlainValue (processor, dd::ParamIDs::multibandPhase, 1.0f);
+    setPlainValue (processor, dd::ParamIDs::quality, 2.0f);
     std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
     context.expect (editor != nullptr, "Popup test editor could not be created");
     if (editor == nullptr)
@@ -461,15 +952,15 @@ void testPopupLifecycleContract (TestContext& context)
                         "Algorithm selector kept a stale open state");
     }
 
-    auto* quality = findButton (*editor, "OS OFF");
+    auto* quality = findButton (*editor, "OS 4X");
     context.expect (quality != nullptr && quality->onClick != nullptr,
                     "OS selector is missing");
     if (quality != nullptr && quality->onClick != nullptr)
     {
         quality->onClick();
-        auto* popup = findVisibleDesktopComponent (59, 112);
+        auto* popup = findVisibleDesktopComponent (60, 112);
         context.expect (popup != nullptr,
-                        "OS menu geometry is not 59x112");
+                        "OS menu geometry is not 60x112");
         context.expect ((bool) quality->getProperties().getWithDefault (
                             "pickerOpen", false),
                         "OS selector did not enter open state");
@@ -477,7 +968,7 @@ void testPopupLifecycleContract (TestContext& context)
             popup->keyPressed (juce::KeyPress (
                 juce::KeyPress::escapeKey));
         context.expect (
-            findVisibleDesktopComponent (59, 112) == nullptr,
+            findVisibleDesktopComponent (60, 112) == nullptr,
             "Escape did not dismiss the OS menu");
         context.expect (! (bool) quality->getProperties().getWithDefault (
                             "pickerOpen", false),
@@ -548,7 +1039,7 @@ void testAnalyzerTransportAndLinking (TestContext& context)
     constexpr int samples = 128;
     dd::DefaultDistortionAudioProcessor processor;
     processor.prepareToPlay (48000.0, samples);
-    processor.setAnalyzerEnabled (true);
+    processor.setAnalyzerEnabled (true, true);
     setPlainValue (processor, dd::ParamIDs::autoGain, 0.0f);
     setPlainValue (processor, dd::ParamIDs::drive, 0.0f);
     setPlainValue (processor, dd::ParamIDs::mix, 0.0f);
@@ -593,12 +1084,18 @@ void testAnalyzerTransportAndLinking (TestContext& context)
                     "Analyzer input/output peak bins are not aligned");
     context.expect (std::abs (*inputPeak - *outputPeak) < 0.15f,
                     "Analyzer input/output peak levels are not aligned");
+    const auto statistics = processor.getAnalyzerStatistics();
+    context.expect (
+        statistics.valid
+            && std::abs (statistics.levelDeltaDb) < 0.2f,
+        "Distortion analyzer statistics are invalid for unity dry signal");
 
     setPlainValue (processor, dd::ParamIDs::route, 1.0f);
     setPlainValue (processor, dd::ParamIDs::placement, -42.0f);
     setPlainValue (processor, dd::ParamIDs::dynamic, 73.0f);
     setPlainValue (processor, dd::ParamIDs::speed, 19.0f);
     setPlainValue (processor, dd::ParamIDs::inputHp, 123.0f);
+    setPlainValue (processor, dd::ParamIDs::inputHpDetector, 1.0f);
     setPlainValue (processor, dd::ParamIDs::outputLp, 4321.0f);
     processor.setMultibandLinkedFromUi (false);
     auto multiband = processor.getCurrentMultibandParameters();
@@ -611,6 +1108,7 @@ void testAnalyzerTransportAndLinking (TestContext& context)
                 && std::abs (values.dynamicPercent - 73.0f) < 0.11f
                 && std::abs (values.speedPercent - 19.0f) < 0.11f
                 && std::abs (values.inputHpHz - 123.0f) < 0.11f
+                && values.inputHpDetector
                 && std::abs (values.outputLpHz - 4321.0f) < 1.1f,
             "Unlink did not copy the 0.9 master context to every band");
     }
@@ -621,6 +1119,8 @@ void testAnalyzerTransportAndLinking (TestContext& context)
     setPlainValue (processor, dd::ParamIDs::band (1, "Dynamic"), -64.0f);
     setPlainValue (processor, dd::ParamIDs::band (1, "Speed"), 91.0f);
     setPlainValue (processor, dd::ParamIDs::band (1, "InputHp"), 77.0f);
+    setPlainValue (
+        processor, dd::ParamIDs::band (1, "InputHpDetector"), 0.0f);
     setPlainValue (processor, dd::ParamIDs::band (1, "OutputLp"), 6789.0f);
     processor.setMultibandLinkedFromUi (true);
     const auto master = processor.getCurrentParameters();
@@ -630,6 +1130,7 @@ void testAnalyzerTransportAndLinking (TestContext& context)
             && std::abs (master.dynamicPercent + 64.0f) < 0.11f
             && std::abs (master.speedPercent - 91.0f) < 0.11f
             && std::abs (master.inputHpHz - 77.0f) < 0.11f
+            && ! master.inputHpDetector
             && std::abs (master.outputLpHz - 6789.0f) < 1.1f,
         "Link did not promote the selected 0.9 band context to master");
 }
@@ -638,11 +1139,27 @@ void testAnalyzerTransportAndLinking (TestContext& context)
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
+    const auto originalTheme = default_family::ThemePreferences::load (true);
+    const auto originalScale = default_family::EditorPreferences::loadScale();
+    struct PreferenceRestorer
+    {
+        default_family::ThemeState theme;
+        float scale = 1.0f;
+        ~PreferenceRestorer()
+        {
+            default_family::ThemePreferences::save (theme);
+            default_family::EditorPreferences::saveScale (scale);
+        }
+    } restorePreferences { originalTheme, originalScale };
     TestContext context;
     testManifestAndDefaults (context);
+    testUpdatePolicyContract (context);
     testVersionFiveMigration (context);
     testBooleanStateCanonicalization (context);
     testLayoutContract (context);
+    testThemeAndSettingsContract (context);
+    testUtilityStripInteractionContract (context);
+    testSmartGainAnimationContract (context);
     testSliderInteractionContract (context);
     testPopupLifecycleContract (context);
     testLatencyTransition (context);

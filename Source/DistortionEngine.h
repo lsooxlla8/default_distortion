@@ -115,6 +115,10 @@ public:
     {
         return smartLockedForUi.load (std::memory_order_relaxed);
     }
+    [[nodiscard]] float getSmartAutoGainDb() const noexcept
+    {
+        return smartGainDbForUi.load (std::memory_order_relaxed);
+    }
 
     static const std::array<juce::String, modeCount>& getModeNames();
     static const std::array<juce::String, modeCount>& getCharacterNames();
@@ -345,7 +349,7 @@ private:
     static bool usesLegacyDrivePath (Mode mode) noexcept;
     static bool usesDriveAsAlgorithmParameter (Mode mode) noexcept;
     static bool usesOversampling (Mode mode) noexcept;
-    void resetSmartAutoGain() noexcept;
+    void resetSmartAutoGain (bool preserveGain = false) noexcept;
     void prepareKWeightingFilters();
     void accumulateLoudnessSample (float dry, float wet, int channel) noexcept;
     void finishLoudnessSlice() noexcept;
@@ -365,7 +369,7 @@ private:
     void prepareDynamicDrive (const juce::AudioBuffer<float>&,
                               const Parameters&,
                               int samples) noexcept;
-    void updateInputHighPass (float cutoffHz);
+    void updateInputHighPass (float cutoffHz, bool detectorOnly);
     void updateOutputLowPass (float cutoffHz);
     void processInputHighPass (juce::AudioBuffer<float>&);
     float processOutputLowPassSample (float input, int channel) noexcept;
@@ -388,6 +392,8 @@ private:
     std::array<ToneFilters, maximumChannels> toneFilters {};
     std::array<juce::IIRFilter, maximumChannels> inputHpFirst {};
     std::array<juce::IIRFilter, maximumChannels> inputHpSecond {};
+    std::array<juce::IIRFilter, maximumChannels> detectorHpFirst {};
+    std::array<juce::IIRFilter, maximumChannels> detectorHpSecond {};
     std::array<juce::IIRFilter, maximumChannels> outputLpFirst {};
     std::array<juce::IIRFilter, maximumChannels> outputLpSecond {};
     std::array<KWeightingFilter, maximumChannels> smartDryKWeighting {};
@@ -416,8 +422,10 @@ private:
     juce::AudioBuffer<float> drySustainBuffer;
     juce::AudioBuffer<float> wetTransientBuffer;
     juce::AudioBuffer<float> wetSustainBuffer;
-    TransientSplitter dryTransientSplitter;
-    TransientSplitter wetTransientSplitter;
+    TransientSplitter routingTransientSplitter;
+    bool transientPlacementActive = false;
+    float transientPlacementWeight = 1.0f;
+    float sustainPlacementWeight = 1.0f;
     std::vector<float> dynamicDriveOffsets;
     const float* activeDynamicDriveOffsets = nullptr;
     int dynamicDriveSamples = 0;
@@ -438,10 +446,13 @@ private:
     float lastInputHpCoefficientHz = std::numeric_limits<float>::quiet_NaN();
     float lastOutputLpCoefficientHz = std::numeric_limits<float>::quiet_NaN();
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inputHpMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> detectorHpMix;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputLpMix;
     float autoGainLinear = 1.0f;
     float deterministicGainLinear = 1.0f;
     float smartGainLinear = 1.0f;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+        smartGainSmoother;
     double smartWetPeak = 0.0;
     double smartDrySliceEnergy = 0.0;
     double smartWetSliceEnergy = 0.0;
@@ -458,6 +469,7 @@ private:
     bool smartGainLocked = false;
     std::atomic<float> smartProgress { 0.0f };
     std::atomic<bool> smartLockedForUi { false };
+    std::atomic<float> smartGainDbForUi { 0.0f };
     std::uint64_t lastGainSignature = 0;
     std::uint64_t lastGainLookupSignature = 0;
     std::uint64_t lastSmartGainSignature = 0;

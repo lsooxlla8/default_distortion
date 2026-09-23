@@ -48,7 +48,8 @@
   const SLOPES = [6, 12, 24, 36, 48];
   const CONTEXT_KEYS = [
     "mode", "drive", "character", "secondary", "asym", "asymStereo",
-    "placementMode", "placement", "dynamic", "speed", "inputHp", "tone", "stages", "outputLp", "mix"
+    "placementMode", "placement", "dynamic", "speed", "tone", "stages",
+    "inputHp", "inputHpDetector", "outputLp", "mix"
   ];
   const $ = (id) => document.getElementById(id);
   const plugin = $("plugin");
@@ -79,6 +80,7 @@
       dynamic: 0,
       speed: 100,
       inputHp: 20,
+      inputHpDetector: false,
       tone: 0,
       stages: 1,
       outputLp: 20000,
@@ -261,7 +263,8 @@
     if (key === "placement") return { min: -100, max: 100, step: 0.1 };
     if (key === "dynamic") return { min: -100, max: 100, step: 0.1 };
     if (key === "speed") return { min: 0, max: 100, step: 0.1 };
-    if (key === "inputHp" || key === "outputLp") return { min: 20, max: 20000, step: 1, logarithmic: true };
+    if (key === "inputHp") return { min: 20, max: 2000, step: 1, logarithmic: true };
+    if (key === "outputLp") return { min: 20, max: 20000, step: 1, logarithmic: true };
     if (key === "output") return { min: -24, max: 12, step: 0.01 };
     if (key === "trim") return { min: -12, max: 12, step: 0.01 };
     return { min: 0, max: 1, step: 0.001 };
@@ -961,6 +964,10 @@
     plugin.classList.toggle("is-expanded", state.multiband);
     plugin.classList.toggle("is-bypassed", !state.enabled);
     $("asymStereo").classList.toggle("is-active", params.asymStereo);
+    $("inputHpDetector").classList.toggle(
+      "is-active", params.inputHpDetector);
+    $("inputHpDetector").querySelector(".route-destination").textContent =
+      params.inputHpDetector ? "DYN" : "IN";
     $("linkBands").classList.toggle("is-active", state.linked);
     $("phaseValue").textContent = PHASES[state.phase];
   }
@@ -1026,6 +1033,11 @@
     $("asymStereo").addEventListener("click", (event) => {
       event.stopPropagation();
       setContextValue("asymStereo", !targetParams().asymStereo);
+    });
+    $("inputHpDetector").addEventListener("click", (event) => {
+      event.stopPropagation();
+      setContextValue(
+        "inputHpDetector", !targetParams().inputHpDetector);
     });
 
     $("qualityPicker").addEventListener("pointerdown", (event) => {

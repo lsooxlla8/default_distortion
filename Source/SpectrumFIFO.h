@@ -22,6 +22,7 @@ public:
     static constexpr int numBins = fftSize / 2;
     static constexpr int publishHop = 2048;
     static constexpr int numSlots = 3;
+    static constexpr int maximumChannels = 2;
 
     SpectrumFIFO()
         : fft (fftOrder), storage (std::make_unique<Storage>())
@@ -62,14 +63,20 @@ public:
         readSlot = 2;
         fresh.store (false, std::memory_order_relaxed);
         for (auto& slot : storage->slots)
-            slot.fill (0.0f);
-        storage->capture.fill (0.0f);
+        {
+            for (auto& channel : slot.samples)
+                channel.fill (0.0f);
+            slot.channels = 1;
+        }
+        for (auto& channel : storage->capture)
+            channel.fill (0.0f);
         storage->outputMagnitudes.fill (-100.0f);
     }
 
     void pushBlock (const juce::AudioBuffer<float>& buffer) noexcept
     {
-        const auto channels = buffer.getNumChannels();
+        const auto channels = juce::jmin (
+            maximumChannels, buffer.getNumChannels());
         const auto samples = buffer.getNumSamples();
         if (channels <= 0 || samples <= 0)
             return;
@@ -77,17 +84,16 @@ public:
         auto index = fifoWriteIndex;
         for (int sample = 0; sample < samples; ++sample)
         {
-            auto mono = 0.0f;
             for (int channel = 0; channel < channels; ++channel)
-                mono += buffer.getSample (channel, sample);
-            storage->capture[static_cast<size_t> (index)] =
-                mono / static_cast<float> (channels);
+                storage->capture[static_cast<size_t> (channel)]
+                                [static_cast<size_t> (index)] =
+                    buffer.getSample (channel, sample);
             if (++index >= fftSize)
                 index = 0;
             if (++samplesSincePublish >= publishHop)
             {
                 samplesSincePublish = 0;
-                snapshotCapture (index);
+                snapshotCapture (index, channels);
                 writerFlip();
             }
         }
@@ -100,21 +106,33 @@ public:
             return false;
 
         readSlot = midSlot.exchange (readSlot, std::memory_order_acquire);
-        const auto& source = storage->slots[static_cast<size_t> (readSlot)];
-        storage->fftData.fill (0.0f);
-        for (int sample = 0; sample < fftSize; ++sample)
-            storage->fftData[static_cast<size_t> (sample)] =
-                source[static_cast<size_t> (sample)]
-                * storage->hann[static_cast<size_t> (sample)];
-        fft.performFrequencyOnlyForwardTransform (storage->fftData.data());
+        const auto& frame = storage->slots[static_cast<size_t> (readSlot)];
+        storage->linearPower.fill (0.0f);
+        const auto channelCount = juce::jlimit (
+            1, maximumChannels, frame.channels);
+        for (int channel = 0; channel < channelCount; ++channel)
+        {
+            storage->fftData.fill (0.0f);
+            for (int sample = 0; sample < fftSize; ++sample)
+                storage->fftData[static_cast<size_t> (sample)] =
+                    frame.samples[static_cast<size_t> (channel)]
+                                 [static_cast<size_t> (sample)]
+                    * storage->hann[static_cast<size_t> (sample)];
+            fft.performFrequencyOnlyForwardTransform (storage->fftData.data());
+            for (int bin = 0; bin < numBins; ++bin)
+            {
+                const auto normalised =
+                    storage->fftData[static_cast<size_t> (bin)]
+                    * (4.0f / static_cast<float> (fftSize));
+                storage->linearPower[static_cast<size_t> (bin)] +=
+                    normalised * normalised
+                    / static_cast<float> (channelCount);
+            }
+        }
 
         storage->cumulativePower[0] = 0.0;
         for (int bin = 0; bin < numBins; ++bin)
         {
-            const auto normalised = storage->fftData[static_cast<size_t> (bin)]
-                * (4.0f / static_cast<float> (fftSize));
-            storage->linearPower[static_cast<size_t> (bin)] =
-                normalised * normalised;
             storage->cumulativePower[static_cast<size_t> (bin + 1)] =
                 storage->cumulativePower[static_cast<size_t> (bin)]
                 + storage->linearPower[static_cast<size_t> (bin)];
@@ -146,24 +164,35 @@ private:
         fresh.store (true, std::memory_order_release);
     }
 
-    void snapshotCapture (int oldestSample) noexcept
+    void snapshotCapture (int oldestSample, int channels) noexcept
     {
-        auto& destination = storage->slots[static_cast<size_t> (writeSlot)];
+        auto& frame = storage->slots[static_cast<size_t> (writeSlot)];
         const auto tailSamples = fftSize - oldestSample;
-        std::copy_n (
-            storage->capture.begin() + oldestSample,
-            tailSamples,
-            destination.begin());
-        std::copy_n (
-            storage->capture.begin(),
-            oldestSample,
-            destination.begin() + tailSamples);
+        frame.channels = juce::jlimit (1, maximumChannels, channels);
+        for (int channel = 0; channel < frame.channels; ++channel)
+        {
+            const auto& source = storage->capture[static_cast<size_t> (channel)];
+            auto& destination = frame.samples[static_cast<size_t> (channel)];
+            std::copy_n (
+                source.begin() + oldestSample,
+                tailSamples,
+                destination.begin());
+            std::copy_n (
+                source.begin(),
+                oldestSample,
+                destination.begin() + tailSamples);
+        }
     }
 
     struct Storage
     {
-        std::array<std::array<float, fftSize>, numSlots> slots {};
-        std::array<float, fftSize> capture {};
+        struct Frame
+        {
+            std::array<std::array<float, fftSize>, maximumChannels> samples {};
+            int channels = 1;
+        };
+        std::array<Frame, numSlots> slots {};
+        std::array<std::array<float, fftSize>, maximumChannels> capture {};
         std::array<float, fftSize * 2> fftData {};
         std::array<float, numBins> outputMagnitudes {};
         std::array<float, numBins> linearPower {};

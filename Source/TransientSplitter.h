@@ -57,12 +57,17 @@ class TransientSplitter
         std::unique_ptr<juce::dsp::FFT> fft;
         std::vector<float> input;
         std::vector<float> output;
+        std::vector<float> pairedInput;
+        std::vector<float> pairedOutput;
         std::vector<float> fftData;
+        std::vector<float> pairedFftData;
         std::vector<float> magnitude;
         std::vector<float> mask;
         std::vector<float> window;
         std::vector<float> delay;
+        std::vector<float> pairedDelay;
         std::array<std::vector<float>, 3> spectralLines;
+        std::array<std::vector<float>, 3> pairedSpectralLines;
         std::vector<Median5> timeMedian;
 
         void prepare (int newOrder)
@@ -74,7 +79,10 @@ class TransientSplitter
             fft = std::make_unique<juce::dsp::FFT> (order);
             input.assign (static_cast<size_t> (fftSize), 0.0f);
             output.assign (static_cast<size_t> (fftSize), 0.0f);
+            pairedInput.assign (static_cast<size_t> (fftSize), 0.0f);
+            pairedOutput.assign (static_cast<size_t> (fftSize), 0.0f);
             fftData.assign (static_cast<size_t> (2 * fftSize), 0.0f);
+            pairedFftData.assign (static_cast<size_t> (2 * fftSize), 0.0f);
             magnitude.assign (static_cast<size_t> (fftSize / 2 + 1), 0.0f);
             mask.assign (magnitude.size(), 0.0f);
             window.resize (static_cast<size_t> (fftSize));
@@ -85,18 +93,26 @@ class TransientSplitter
                     / static_cast<float> (fftSize));
             for (auto& line : spectralLines)
                 line.assign (static_cast<size_t> (2 * fftSize), 0.0f);
+            for (auto& line : pairedSpectralLines)
+                line.assign (static_cast<size_t> (2 * fftSize), 0.0f);
             timeMedian.assign (magnitude.size(), {});
             delay.assign (
                 static_cast<size_t> (fftSize + 2 * hopSize + 1), 0.0f);
+            pairedDelay.assign (delay.size(), 0.0f);
         }
 
         void reset() noexcept
         {
             std::fill (input.begin(), input.end(), 0.0f);
             std::fill (output.begin(), output.end(), 0.0f);
+            std::fill (pairedInput.begin(), pairedInput.end(), 0.0f);
+            std::fill (pairedOutput.begin(), pairedOutput.end(), 0.0f);
             std::fill (mask.begin(), mask.end(), 0.0f);
             std::fill (delay.begin(), delay.end(), 0.0f);
+            std::fill (pairedDelay.begin(), pairedDelay.end(), 0.0f);
             for (auto& line : spectralLines)
+                std::fill (line.begin(), line.end(), 0.0f);
+            for (auto& line : pairedSpectralLines)
                 std::fill (line.begin(), line.end(), 0.0f);
             for (auto& median : timeMedian)
                 median.clear();
@@ -117,7 +133,8 @@ class TransientSplitter
                 (ratio - 0.5f) * separation, -5.0f, 0.5f) + 0.5f;
         }
 
-        void processFrame (float balanceValue,
+        void processFrame (bool hasPairedSource,
+                           float balanceValue,
                            float separationValue,
                            float holdValue,
                            float smoothValue)
@@ -128,6 +145,19 @@ class TransientSplitter
                     input[static_cast<size_t> ((position + sample) % fftSize)]
                     * window[static_cast<size_t> (sample)];
             fft->performRealOnlyForwardTransform (fftData.data(), true);
+
+            if (hasPairedSource)
+            {
+                std::fill (
+                    pairedFftData.begin(), pairedFftData.end(), 0.0f);
+                for (int sample = 0; sample < fftSize; ++sample)
+                    pairedFftData[static_cast<size_t> (sample)] =
+                        pairedInput[static_cast<size_t> (
+                            (position + sample) % fftSize)]
+                        * window[static_cast<size_t> (sample)];
+                fft->performRealOnlyForwardTransform (
+                    pairedFftData.data(), true);
+            }
 
             const auto bins = fftSize / 2 + 1;
             magnitude[0] = std::abs (fftData[0]);
@@ -160,9 +190,15 @@ class TransientSplitter
             }
 
             spectralLines[static_cast<size_t> (linePosition)] = fftData;
+            if (hasPairedSource)
+                pairedSpectralLines[static_cast<size_t> (linePosition)] =
+                    pairedFftData;
             linePosition = (linePosition + 1)
                 % static_cast<int> (spectralLines.size());
             fftData = spectralLines[static_cast<size_t> (linePosition)];
+            if (hasPairedSource)
+                pairedFftData = pairedSpectralLines[
+                    static_cast<size_t> (linePosition)];
 
             auto mean = 0.0f;
             for (const auto value : mask)
@@ -171,30 +207,55 @@ class TransientSplitter
             mean = std::clamp (
                 (mean - 0.5f) * std::sqrt (separationValue), -0.5f, 0.5f)
                     + 0.5f;
-            const auto apply = [&] (int real, int imaginary, int bin)
+            const auto multiplierForBin = [&] (int bin)
             {
-                const auto multiplier =
+                return
                     (mean - mask[static_cast<size_t> (bin)]) * smoothValue
                     + mask[static_cast<size_t> (bin)];
-                fftData[static_cast<size_t> (real)] *= multiplier;
-                if (imaginary >= 0)
-                    fftData[static_cast<size_t> (imaginary)] *= multiplier;
             };
-            apply (0, -1, 0);
-            apply (1, -1, bins - 1);
+            const auto apply = [&] (std::vector<float>& data,
+                                    int real,
+                                    int imaginary,
+                                    int bin)
+            {
+                const auto multiplier = multiplierForBin (bin);
+                data[static_cast<size_t> (real)] *= multiplier;
+                if (imaginary >= 0)
+                    data[static_cast<size_t> (imaginary)] *= multiplier;
+            };
+            apply (fftData, 0, -1, 0);
+            apply (fftData, 1, -1, bins - 1);
             for (int bin = 1; bin < bins - 1; ++bin)
-                apply (2 * bin, 2 * bin + 1, bin);
+                apply (fftData, 2 * bin, 2 * bin + 1, bin);
 
             fft->performRealOnlyInverseTransform (fftData.data());
             for (int sample = 0; sample < fftSize; ++sample)
                 output[static_cast<size_t> ((position + sample) % fftSize)]
                     += fftData[static_cast<size_t> (sample)]
                         * window[static_cast<size_t> (sample)] * (2.0f / 3.0f);
+
+            if (hasPairedSource)
+            {
+                apply (pairedFftData, 0, -1, 0);
+                apply (pairedFftData, 1, -1, bins - 1);
+                for (int bin = 1; bin < bins - 1; ++bin)
+                    apply (pairedFftData, 2 * bin, 2 * bin + 1, bin);
+                fft->performRealOnlyInverseTransform (pairedFftData.data());
+                for (int sample = 0; sample < fftSize; ++sample)
+                    pairedOutput[static_cast<size_t> (
+                        (position + sample) % fftSize)]
+                        += pairedFftData[static_cast<size_t> (sample)]
+                            * window[static_cast<size_t> (sample)]
+                            * (2.0f / 3.0f);
+            }
         }
 
-        void process (const float* source,
+        void process (const float* reference,
+                      const float* pairedSource,
                       float* transient,
                       float* sustain,
+                      float* pairedTransient,
+                      float* pairedSustain,
                       int samples,
                       float balanceValue,
                       float separationValue,
@@ -204,12 +265,26 @@ class TransientSplitter
             const auto delaySize = static_cast<int> (delay.size());
             for (int sample = 0; sample < samples; ++sample)
             {
-                input[static_cast<size_t> (position)] = source[sample];
+                input[static_cast<size_t> (position)] = reference[sample];
                 transient[sample] = output[static_cast<size_t> (position)];
                 output[static_cast<size_t> (position)] = 0.0f;
                 const auto read = (delayPosition + 1) % delaySize;
                 const auto delayed = delay[static_cast<size_t> (read)];
-                delay[static_cast<size_t> (delayPosition)] = source[sample];
+                delay[static_cast<size_t> (delayPosition)] = reference[sample];
+                if (pairedSource != nullptr)
+                {
+                    pairedInput[static_cast<size_t> (position)] =
+                        pairedSource[sample];
+                    pairedTransient[sample] = pairedOutput[
+                        static_cast<size_t> (position)];
+                    pairedOutput[static_cast<size_t> (position)] = 0.0f;
+                    const auto pairedDelayed = pairedDelay[
+                        static_cast<size_t> (read)];
+                    pairedDelay[static_cast<size_t> (delayPosition)] =
+                        pairedSource[sample];
+                    pairedSustain[sample] =
+                        pairedDelayed - pairedTransient[sample];
+                }
                 delayPosition = read;
                 sustain[sample] = delayed - transient[sample];
                 position = (position + 1) % fftSize;
@@ -217,6 +292,7 @@ class TransientSplitter
                 {
                     hopCounter = 0;
                     processFrame (
+                        pairedSource != nullptr,
                         balanceValue,
                         separationValue,
                         holdValue,
@@ -277,8 +353,45 @@ public:
         for (int channel = 0; channel < channels; ++channel)
             channelStates[static_cast<size_t> (channel)].process (
                 input.getReadPointer (channel),
+                nullptr,
                 transient.getWritePointer (channel),
                 sustain.getWritePointer (channel),
+                nullptr,
+                nullptr,
+                samples,
+                balance,
+                separation,
+                hold,
+                smooth);
+    }
+
+    // The mask is derived once from referenceInput and applied to both the
+    // reference and paired signal. This keeps dry/wet decomposition exactly
+    // complementary and prevents their transient masks from drifting apart.
+    void processPair (const juce::AudioBuffer<float>& referenceInput,
+                      const juce::AudioBuffer<float>& pairedInput,
+                      juce::AudioBuffer<float>& referenceTransient,
+                      juce::AudioBuffer<float>& referenceSustain,
+                      juce::AudioBuffer<float>& pairedTransient,
+                      juce::AudioBuffer<float>& pairedSustain,
+                      int samples)
+    {
+        const auto channels = std::min (
+            { preparedChannels,
+              referenceInput.getNumChannels(),
+              pairedInput.getNumChannels(),
+              referenceTransient.getNumChannels(),
+              referenceSustain.getNumChannels(),
+              pairedTransient.getNumChannels(),
+              pairedSustain.getNumChannels() });
+        for (int channel = 0; channel < channels; ++channel)
+            channelStates[static_cast<size_t> (channel)].process (
+                referenceInput.getReadPointer (channel),
+                pairedInput.getReadPointer (channel),
+                referenceTransient.getWritePointer (channel),
+                referenceSustain.getWritePointer (channel),
+                pairedTransient.getWritePointer (channel),
+                pairedSustain.getWritePointer (channel),
                 samples,
                 balance,
                 separation,

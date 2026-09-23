@@ -8,13 +8,15 @@ Soft Clip, Hard Clip, and rational `futils::tanh` implementation:
 - Vital: <https://github.com/mtytel/vital>
 - commit: `636ca0ef517a4db087a6a08a6a8a5e704e21f836`
 - `src/synthesis/effects/distortion.cpp`
+- `src/interface/editor_sections/distortion_section.cpp`
 - `src/synthesis/framework/futils.h`
 
 Changes in default_distortion include conversion from Vital's SIMD types to
 scalar `float`, integration with the plug-in's serial stage path, and use of
 Character to morph Soft Clip from Vital soft clipping to a bounded cubic
 transfer, and Hard Clip from Vital hard clipping to Vital soft clipping.
-Character 0 retains the copied Vital transfer.
+Character 0 retains the copied Vital transfer. The Hard Clip preview also uses
+Vital's `-1..+1` transfer domain, direct dB-drive mapping, and 90% draw scale.
 
 Copyright (C) 2013-2019 Matt Tytel.
 Licensed under GNU GPL version 3 or later. See `LICENSES/GPL-3.0.txt`.

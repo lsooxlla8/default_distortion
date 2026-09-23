@@ -219,7 +219,16 @@ std::uint64_t hashSmartGainParameters (const Parameters& parameters) noexcept
     add (std::bit_cast<std::uint32_t> (parameters.dynamicPercent));
     add (std::bit_cast<std::uint32_t> (parameters.speedPercent));
     add (std::bit_cast<std::uint32_t> (parameters.inputHpHz));
+    add (static_cast<std::uint32_t> (parameters.inputHpDetector));
     add (std::bit_cast<std::uint32_t> (parameters.outputLpHz));
+    add (std::bit_cast<std::uint32_t> (
+        parameters.transientStrengthPercent));
+    add (std::bit_cast<std::uint32_t> (
+        parameters.transientBalancePercent));
+    add (std::bit_cast<std::uint32_t> (
+        parameters.transientHoldPercent));
+    add (std::bit_cast<std::uint32_t> (
+        parameters.transientSmoothPercent));
     return hash;
 }
 
@@ -645,6 +654,36 @@ void DistortionEngine::makeVisualization (const Parameters& parameters,
         return;
     }
 
+    if (mode == Mode::hardClip)
+    {
+        // Keep Vital's strict -1..+1 transfer domain and direct dB drive, but
+        // map that domain to the same +/-1.25 display height as the other
+        // transfer previews. The extra 0.9 multiplier used by Vital's own
+        // viewer made this graph visibly shorter inside our graph viewport.
+        constexpr auto graphFullScale = 1.25f;
+        constexpr auto displayScale = graphFullScale;
+        const auto previewDrive = juce::Decibels::decibelsToGain (
+            juce::jlimit (-30.0f, 30.0f, parameters.driveDb));
+        const auto character = unipolarCharacter (parameters.character);
+        for (int point = 0; point < Visualization::pointCount; ++point)
+        {
+            const auto position = static_cast<float> (point)
+                / static_cast<float> (Visualization::pointCount - 1);
+            const auto input = 2.0f * position - 1.0f;
+            const auto shapedInput = applyAsymmetry (
+                input, parameters.asymmetry);
+            const auto output = clampBipolar (lerp (
+                vitalHardClip (shapedInput, previewDrive),
+                vitalSoftClip (shapedInput, previewDrive),
+                character));
+            visualization.input[static_cast<size_t> (point)] =
+                displayScale * input;
+            visualization.output[static_cast<size_t> (point)] =
+                displayScale * output;
+        }
+        return;
+    }
+
     std::array<StageState, maximumStages> states {};
     const auto simulationSampleRate =
         mode == Mode::downsample
@@ -780,13 +819,10 @@ void DistortionEngine::prepare (double newSampleRate, int maximumBlockSize, int 
         preparedChannels, preparedBlockSize, false, false, true);
     wetSustainBuffer.setSize (
         preparedChannels, preparedBlockSize, false, false, true);
-    dryTransientSplitter.prepare (
+    routingTransientSplitter.prepare (
         sampleRate, preparedBlockSize, preparedChannels);
-    wetTransientSplitter.prepare (
-        sampleRate, preparedBlockSize, preparedChannels);
-    dryTransientSplitter.setParameters (100.0f, 0.0f, 100.0f, 50.0f);
-    wetTransientSplitter.setParameters (100.0f, 0.0f, 100.0f, 50.0f);
-    transientRoutingLatencySamples = dryTransientSplitter.latency();
+    routingTransientSplitter.setParameters (100.0f, 0.0f, 50.0f, 50.0f);
+    transientRoutingLatencySamples = routingTransientSplitter.latency();
     const auto routeDelayCapacity = static_cast<size_t> (
         transientRoutingLatencySamples + preparedBlockSize * 2 + 16);
     for (int channel = 0; channel < maximumChannels; ++channel)
@@ -799,8 +835,12 @@ void DistortionEngine::prepare (double newSampleRate, int maximumBlockSize, int 
     dynamicDriveOffsets.assign (static_cast<size_t> (preparedBlockSize), 0.0f);
     inputHpMix.reset (sampleRate, 0.01);
     inputHpMix.setCurrentAndTargetValue (0.0f);
+    detectorHpMix.reset (sampleRate, 0.01);
+    detectorHpMix.setCurrentAndTargetValue (0.0f);
     outputLpMix.reset (sampleRate, 0.01);
     outputLpMix.setCurrentAndTargetValue (0.0f);
+    smartGainSmoother.reset (sampleRate, 0.15);
+    smartGainSmoother.setCurrentAndTargetValue (1.0f);
     lastToneCoefficientAmount = std::numeric_limits<float>::quiet_NaN();
     updateToneFilters (0.0f);
     prepareKWeightingFilters();
@@ -832,9 +872,10 @@ void DistortionEngine::reset()
 
     for (auto& filters : toneFilters)
         filters.reset();
-    dryTransientSplitter.reset();
-    wetTransientSplitter.reset();
+    routingTransientSplitter.reset();
+    transientPlacementActive = false;
     for (auto* bank : { &inputHpFirst, &inputHpSecond,
+                        &detectorHpFirst, &detectorHpSecond,
                         &outputLpFirst, &outputLpSecond })
         for (auto& filter : *bank)
             filter.reset();
@@ -869,6 +910,7 @@ void DistortionEngine::reset()
     lastInputHpCoefficientHz = std::numeric_limits<float>::quiet_NaN();
     lastOutputLpCoefficientHz = std::numeric_limits<float>::quiet_NaN();
     inputHpMix.setCurrentAndTargetValue (0.0f);
+    detectorHpMix.setCurrentAndTargetValue (0.0f);
     outputLpMix.setCurrentAndTargetValue (0.0f);
     routingLatencySamples = 0;
     dryDelayPositions.fill (0);
@@ -885,9 +927,14 @@ void DistortionEngine::reset()
     lastAutoGainMode = -1;
 }
 
-void DistortionEngine::resetSmartAutoGain() noexcept
+void DistortionEngine::resetSmartAutoGain (bool preserveGain) noexcept
 {
-    smartGainLinear = deterministicGainLinear;
+    smartGainLinear = preserveGain
+        ? smartGainSmoother.getCurrentValue()
+        : deterministicGainLinear;
+    smartGainSmoother.setCurrentAndTargetValue (smartGainLinear);
+    if (preserveGain)
+        autoGainLinear = smartGainLinear;
     smartWetPeak = 0.0;
     smartDrySliceEnergy = 0.0;
     smartWetSliceEnergy = 0.0;
@@ -908,6 +955,9 @@ void DistortionEngine::resetSmartAutoGain() noexcept
     smartGainLocked = false;
     smartProgress.store (0.0f, std::memory_order_relaxed);
     smartLockedForUi.store (false, std::memory_order_relaxed);
+    smartGainDbForUi.store (
+        juce::Decibels::gainToDecibels (smartGainLinear, -100.0f),
+        std::memory_order_relaxed);
 }
 
 void DistortionEngine::prepareKWeightingFilters()
@@ -1123,14 +1173,31 @@ void DistortionEngine::prepareDynamicDrive (
     };
     const auto attack = coefficient (attackMs);
     const auto release = coefficient (releaseMs);
-    const auto channels = juce::jmax (1, detector.getNumChannels());
+    const auto channels = juce::jmax (
+        1, juce::jmin (preparedChannels, detector.getNumChannels()));
+    const auto filterDetector = detectorHpMix.isSmoothing()
+        || detectorHpMix.getTargetValue() > 0.0f;
 
     for (int sample = 0; sample < available; ++sample)
     {
+        const auto detectorMix = filterDetector
+            ? detectorHpMix.getNextValue() : 0.0f;
         auto level = 0.0f;
         for (int channel = 0; channel < channels; ++channel)
+        {
+            const auto input = detector.getSample (channel, sample);
+            auto detectorSample = input;
+            if (filterDetector)
+            {
+                detectorSample = detectorHpFirst[static_cast<size_t> (channel)]
+                    .processSingleSampleRaw (detectorSample);
+                detectorSample = detectorHpSecond[static_cast<size_t> (channel)]
+                    .processSingleSampleRaw (detectorSample);
+                detectorSample = lerp (input, detectorSample, detectorMix);
+            }
             level = juce::jmax (
-                level, std::abs (detector.getSample (channel, sample)));
+                level, std::abs (detectorSample));
+        }
         level = juce::jlimit (0.0f, 1.0f, level);
         const auto follow = level > dynamicEnvelope ? attack : release;
         dynamicEnvelope = level + follow * (dynamicEnvelope - level);
@@ -1139,26 +1206,40 @@ void DistortionEngine::prepareDynamicDrive (
             : 1.0f;
         const auto dynamicPercent = lerp (
             startDynamic, smoothedDynamicPercent, ramp);
+        const auto perceptualEnvelope = std::pow (dynamicEnvelope, 0.6f);
         dynamicDriveOffsets[static_cast<size_t> (sample)] =
-            dynamicEnvelope * dynamicPercent * 0.36f;
+            perceptualEnvelope * dynamicPercent * 0.36f;
     }
     dynamicDriveSamples = available;
 }
 
-void DistortionEngine::updateInputHighPass (float cutoffHz)
+void DistortionEngine::updateInputHighPass (float cutoffHz,
+                                            bool detectorOnly)
 {
     const auto enabled = cutoffHz > 0.5f;
-    if (! enabled)
+    const auto audioEnabled = enabled && ! detectorOnly;
+    const auto detectorEnabled = enabled && detectorOnly;
+    const auto resetBankIfStarting = [] (
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>& mix,
+        bool shouldEnable,
+        auto& first,
+        auto& second)
     {
-        inputHpMix.setTargetValue (0.0f);
-        return;
-    }
+        if (shouldEnable
+            && mix.getTargetValue() == 0.0f
+            && mix.getCurrentValue() == 0.0f)
+            for (auto* bank : { &first, &second })
+                for (auto& filter : *bank)
+                    filter.reset();
+        mix.setTargetValue (shouldEnable ? 1.0f : 0.0f);
+    };
+    resetBankIfStarting (
+        inputHpMix, audioEnabled, inputHpFirst, inputHpSecond);
+    resetBankIfStarting (
+        detectorHpMix, detectorEnabled, detectorHpFirst, detectorHpSecond);
 
-    if (inputHpMix.getTargetValue() == 0.0f
-        && inputHpMix.getCurrentValue() == 0.0f)
-        for (auto* bank : { &inputHpFirst, &inputHpSecond })
-            for (auto& filter : *bank)
-                filter.reset();
+    if (! enabled)
+        return;
 
     const auto cutoff = juce::jlimit (
         1.0f, static_cast<float> (0.45 * sampleRate), cutoffHz);
@@ -1177,14 +1258,14 @@ void DistortionEngine::updateInputHighPass (float cutoffHz)
             0.0);
         const auto second = juce::IIRCoefficients::makeHighPass (
             sampleRate, cutoff, 1.0);
-        for (int channel = 0; channel < preparedChannels; ++channel)
-        {
-            inputHpFirst[static_cast<size_t> (channel)].setCoefficients (first);
-            inputHpSecond[static_cast<size_t> (channel)].setCoefficients (second);
-        }
+        for (auto* bank : { &inputHpFirst, &detectorHpFirst })
+            for (auto& filter : *bank)
+                filter.setCoefficients (first);
+        for (auto* bank : { &inputHpSecond, &detectorHpSecond })
+            for (auto& filter : *bank)
+                filter.setCoefficients (second);
         lastInputHpCoefficientHz = cutoff;
     }
-    inputHpMix.setTargetValue (1.0f);
 }
 
 void DistortionEngine::updateOutputLowPass (float cutoffHz)
@@ -1266,6 +1347,7 @@ void DistortionEngine::applyPlacementRouting (
     const Parameters& parameters,
     bool forceTransientLatency)
 {
+    transientPlacementActive = false;
     const auto samples = wet.getNumSamples();
     const auto channels = juce::jmin (
         preparedChannels, wet.getNumChannels(), dry.getNumChannels());
@@ -1335,10 +1417,22 @@ void DistortionEngine::applyPlacementRouting (
     drySustainBuffer.setSize (channels, samples, false, false, true);
     wetTransientBuffer.setSize (channels, samples, false, false, true);
     wetSustainBuffer.setSize (channels, samples, false, false, true);
-    dryTransientSplitter.process (
-        dry, dryTransientBuffer, drySustainBuffer, samples);
-    wetTransientSplitter.process (
-        wet, wetTransientBuffer, wetSustainBuffer, samples);
+    routingTransientSplitter.setParameters (
+        parameters.transientStrengthPercent,
+        parameters.transientBalancePercent,
+        parameters.transientHoldPercent,
+        parameters.transientSmoothPercent);
+    routingTransientSplitter.processPair (
+        dry,
+        wet,
+        dryTransientBuffer,
+        drySustainBuffer,
+        wetTransientBuffer,
+        wetSustainBuffer,
+        samples);
+    transientPlacementActive = true;
+    transientPlacementWeight = firstWeight;
+    sustainPlacementWeight = secondWeight;
     for (int channel = 0; channel < channels; ++channel)
         for (int sample = 0; sample < samples; ++sample)
         {
@@ -1404,6 +1498,22 @@ void DistortionEngine::processInternal (
     if (channels <= 0 || samples <= 0)
         return;
 
+    const auto parameterUpdateRate =
+        sampleRate / static_cast<double> (juce::jmax (1, samples));
+    smoothedInputHpHz = smoothTowards (
+        smoothedInputHpHz,
+        juce::jlimit (0.0f, 2000.0f, parameters.inputHpHz),
+        parameterUpdateRate,
+        0.025);
+    smoothedOutputLpHz = smoothTowards (
+        smoothedOutputLpHz,
+        juce::jlimit (2000.0f, 20000.0f, parameters.outputLpHz),
+        parameterUpdateRate,
+        0.025);
+    updateInputHighPass (
+        parameters.inputHpHz <= 0.5f ? 0.0f : smoothedInputHpHz,
+        parameters.inputHpDetector);
+
     if (sharedDynamicSamples >= 0)
     {
         dynamicDriveSamples = juce::jlimit (0, samples, sharedDynamicSamples);
@@ -1417,20 +1527,6 @@ void DistortionEngine::processInternal (
             samples);
         activeDynamicDriveOffsets = dynamicDriveOffsets.data();
     }
-    const auto parameterUpdateRate =
-        sampleRate / static_cast<double> (juce::jmax (1, samples));
-    smoothedInputHpHz = smoothTowards (
-        smoothedInputHpHz,
-        juce::jlimit (0.0f, 200.0f, parameters.inputHpHz),
-        parameterUpdateRate,
-        0.025);
-    smoothedOutputLpHz = smoothTowards (
-        smoothedOutputLpHz,
-        juce::jlimit (2000.0f, 20000.0f, parameters.outputLpHz),
-        parameterUpdateRate,
-        0.025);
-    updateInputHighPass (
-        parameters.inputHpHz <= 0.5f ? 0.0f : smoothedInputHpHz);
     processInputHighPass (buffer);
 
     dryBuffer.setSize (channels, samples, false, false, true);
@@ -1458,7 +1554,8 @@ void DistortionEngine::processInternal (
     if (requiresGainCalibration)
     {
         lastGainSignature = gainSignature;
-        resetSmartAutoGain();
+        resetSmartAutoGain (
+            parameters.autoGainMode == 2 && lastAutoGainMode == 2);
     }
     else if (parameters.autoGainMode == 2 && lastAutoGainMode != 2)
     {
@@ -1468,7 +1565,7 @@ void DistortionEngine::processInternal (
     {
         lastSmartGainSignature = smartGainSignature;
         if (parameters.autoGainMode == 2)
-            resetSmartAutoGain();
+            resetSmartAutoGain (lastAutoGainMode == 2);
     }
     lastAutoGainMode = parameters.autoGainMode;
 
@@ -1757,6 +1854,7 @@ void DistortionEngine::processInternal (
                         measured,
                         static_cast<float> (0.98 / smartWetPeak));
                 smartGainLinear = measured;
+                smartGainSmoother.setTargetValue (measured);
                 smartGainLocked = true;
                 smartProgress.store (1.0f, std::memory_order_relaxed);
                 smartLockedForUi.store (true, std::memory_order_relaxed);
@@ -1767,15 +1865,15 @@ void DistortionEngine::processInternal (
     const auto effectiveAutoGainMode = allowSmartAutoGain
         ? parameters.autoGainMode
         : juce::jlimit (0, 1, parameters.autoGainMode);
+    const auto smartMode = effectiveAutoGainMode == 2;
     const auto targetAutoGain = effectiveAutoGainMode <= 0
         ? 1.0f
         : (effectiveAutoGainMode == 1
             ? deterministicGainLinear
-            : (! smartGainLocked
-                ? deterministicGainLinear
-                : smartGainLinear));
+            : smartGainSmoother.getCurrentValue());
     const auto gainAtBlockStart = autoGainLinear;
-    autoGainLinear = targetAutoGain;
+    if (! smartMode)
+        autoGainLinear = targetAutoGain;
     const auto regularDynamicAutoGain = effectiveAutoGainMode == 1
         && dynamicDriveSamples > 0
         && activeDynamicDriveOffsets != nullptr;
@@ -1786,8 +1884,9 @@ void DistortionEngine::processInternal (
             ? static_cast<float> (sample)
                 / static_cast<float> (samples - 1)
             : 1.0f;
-        auto makeup = lerp (
-            gainAtBlockStart, autoGainLinear, ramp);
+        auto makeup = smartMode
+            ? smartGainSmoother.getNextValue()
+            : lerp (gainAtBlockStart, autoGainLinear, ramp);
         if (regularDynamicAutoGain)
         {
             const auto dynamicIndex = mode == Mode::spectralClip
@@ -1816,10 +1915,20 @@ void DistortionEngine::processInternal (
         const auto lpMix = outputLpMix.getNextValue();
         for (int channel = 0; channel < channels; ++channel)
         {
+            auto routedWet = buffer.getSample (channel, sample) * makeup;
+            if (transientPlacementActive)
+                routedWet = lerp (
+                        dryTransientBuffer.getSample (channel, sample),
+                        wetTransientBuffer.getSample (channel, sample)
+                            * makeup,
+                        transientPlacementWeight)
+                    + lerp (
+                        drySustainBuffer.getSample (channel, sample),
+                        wetSustainBuffer.getSample (channel, sample)
+                            * makeup,
+                        sustainPlacementWeight);
             auto mixed = lerp (
-                dryBuffer.getSample (channel, sample),
-                buffer.getSample (channel, sample) * makeup,
-                mix);
+                dryBuffer.getSample (channel, sample), routedWet, mix);
             if (lpMix > 0.0f)
                 mixed = lerp (
                     mixed,
@@ -1832,6 +1941,14 @@ void DistortionEngine::processInternal (
                 channel, sample, std::isfinite (mixed) ? mixed : 0.0f);
         }
     }
+    if (smartMode)
+        autoGainLinear = smartGainSmoother.getCurrentValue();
+    smartGainDbForUi.store (
+        juce::Decibels::gainToDecibels (
+            parameters.autoGainMode == 2
+                ? smartGainSmoother.getCurrentValue() : 1.0f,
+            -100.0f),
+        std::memory_order_relaxed);
 }
 
 void DistortionEngine::updateToneFilters (float toneAmount)

@@ -41,7 +41,7 @@ juce_add_plugin(DefaultDistortion
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     NEEDS_WEB_BROWSER FALSE
-    NEEDS_CURL FALSE
+    NEEDS_CURL TRUE
     LV2URI "https://github.com/lsooxlla8/default_distortion"
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
@@ -69,6 +69,10 @@ target_sources(DefaultDistortion
         Source/ChowTapeHysteresis.h
         Source/Parameters.h
         Source/UILayout.h
+        Source/UI/DefaultFamilyTheme.cpp
+        Source/UI/DefaultFamilyTheme.h
+        Source/UpdateChecker.cpp
+        Source/UpdateChecker.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
         Source/PluginProcessor.cpp
@@ -79,8 +83,8 @@ target_sources(DefaultDistortion
 
 target_compile_definitions(DefaultDistortion
     PUBLIC
+        DEFAULT_DISTORTION_VERSION="${PROJECT_VERSION}"
         JUCE_WEB_BROWSER=0
-        JUCE_USE_CURL=0
         JUCE_PLUGINHOST_LADSPA=0
         JUCE_VST3_CAN_REPLACE_VST2=0
 )
@@ -89,7 +93,9 @@ target_link_libraries(DefaultDistortion
     PRIVATE
         DefaultDistortionFontAssets
         juce::juce_audio_utils
+        juce::juce_data_structures
         juce::juce_dsp
+        juce::juce_events
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags

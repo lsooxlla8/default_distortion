@@ -1,4 +1,5 @@
 #include "../Source/PluginEditor.h"
+#include "../Source/UILayout.h"
 
 #include <juce_graphics/juce_graphics.h>
 
@@ -42,12 +43,34 @@ dd::MultibandPanel* findMultibandPanel (juce::Component& component)
     return nullptr;
 }
 
+dd::UpdateAvailableOverlay* findUpdateOverlay (juce::Component& component)
+{
+    if (auto* overlay = dynamic_cast<dd::UpdateAvailableOverlay*> (&component))
+        return overlay;
+    for (int index = 0; index < component.getNumChildComponents(); ++index)
+        if (auto* overlay = findUpdateOverlay (
+                *component.getChildComponent (index)))
+            return overlay;
+    return nullptr;
+}
+
 bool imageUsesLightPalette (const juce::Image& image, float scale)
 {
     return image.getPixelAt (
         juce::jmin (juce::roundToInt (10.0f * scale), image.getWidth() - 1),
         juce::jmin (juce::roundToInt (70.0f * scale), image.getHeight() - 1))
         .getPerceivedBrightness() > 0.5f;
+}
+
+void forcePalette (juce::AudioProcessorEditor& editor, bool light)
+{
+    if (auto* look = dynamic_cast<dd::GeometricLookAndFeel*> (
+            &editor.getLookAndFeel()))
+    {
+        look->setInverted (light);
+        editor.sendLookAndFeelChange();
+        editor.repaint();
+    }
 }
 
 bool writePng (const juce::Image& image, const juce::File& destination)
@@ -71,7 +94,8 @@ bool capture (const juce::File& outputDirectory,
               bool prototypeDefaults = false,
               bool interactionState = false,
               bool extremeValues = false,
-              bool hoverCrossover = false)
+              bool hoverCrossover = false,
+              float editorScale = 1.0f)
 {
     dd::DefaultDistortionAudioProcessor processor;
     setPlainValue (processor, dd::ParamIDs::multibandEnabled,
@@ -94,7 +118,7 @@ bool capture (const juce::File& outputDirectory,
         setPlainValue (processor, dd::ParamIDs::placement, 100.0f);
         setPlainValue (processor, dd::ParamIDs::dynamic, 100.0f);
         setPlainValue (processor, dd::ParamIDs::speed, 100.0f);
-        setPlainValue (processor, dd::ParamIDs::inputHp, 200.0f);
+        setPlainValue (processor, dd::ParamIDs::inputHp, 2000.0f);
         setPlainValue (processor, dd::ParamIDs::outputLp, 2000.0f);
         setPlainValue (processor, dd::ParamIDs::mix, 0.0f);
         setPlainValue (processor, dd::ParamIDs::output, 12.0f);
@@ -126,8 +150,14 @@ bool capture (const juce::File& outputDirectory,
             setPlainValue (processor, dd::ParamIDs::band (index, "OutputLp"),
                            20000.0f);
             if (interactionState)
+            {
                 setPlainValue (
                     processor, dd::ParamIDs::band (index, "Route"), 1.0f);
+                setPlainValue (
+                    processor,
+                    dd::ParamIDs::band (index, "InputHpDetector"),
+                    1.0f);
+            }
         }
         if (interactionState)
             setPlainValue (processor, dd::ParamIDs::multibandPhase, 1.0f);
@@ -143,6 +173,11 @@ bool capture (const juce::File& outputDirectory,
     std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
     if (editor == nullptr)
         return false;
+    editor->setSize (
+        juce::roundToInt (dd::ui::designWidth * editorScale),
+        juce::roundToInt ((expanded ? dd::ui::expandedHeight
+                                       : dd::ui::compactHeight) * editorScale));
+    forcePalette (*editor, light);
     const auto afterEditor = processor.getCurrentMultibandParameters();
     if (afterEditor.enabled != expanded
         || afterEditor.bandCount != bandCount
@@ -171,23 +206,16 @@ bool capture (const juce::File& outputDirectory,
         panel->mouseMove (hover);
     }
 
-    auto image = editor->createComponentSnapshot (
+    const auto image = editor->createComponentSnapshot (
         editor->getLocalBounds(), true, imageScale);
     if (imageUsesLightPalette (image, imageScale) != light)
-    {
-        auto* brand = findButton (*editor, "default_distortion");
-        if (brand == nullptr)
-            return false;
-        if (brand->onClick == nullptr)
-            return false;
-        brand->onClick();
-        image = editor->createComponentSnapshot (
-            editor->getLocalBounds(), true, imageScale);
-    }
+        return false;
 
-    const auto expectedWidth = juce::roundToInt (648.0f * imageScale);
+    const auto expectedWidth = juce::roundToInt (
+        648.0f * editorScale * imageScale);
     const auto expectedHeight = juce::roundToInt (
-        static_cast<float> (expanded ? 450 : 286) * imageScale);
+        static_cast<float> (expanded ? 450 : 286)
+            * editorScale * imageScale);
     if (image.getWidth() != expectedWidth || image.getHeight() != expectedHeight)
         return false;
 
@@ -209,15 +237,10 @@ bool capturePopup (const juce::File& outputDirectory,
     std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
     if (editor == nullptr)
         return false;
-    auto base = editor->createComponentSnapshot (
-        editor->getLocalBounds(), true, 1.0f);
-    if (! imageUsesLightPalette (base, 1.0f))
-    {
-        auto* brand = findButton (*editor, "default_distortion");
-        if (brand == nullptr || brand->onClick == nullptr)
-            return false;
-        brand->onClick();
-    }
+    editor->setSize (
+        dd::ui::designWidth,
+        expanded ? dd::ui::expandedHeight : dd::ui::compactHeight);
+    forcePalette (*editor, true);
     auto* button = findButton (*editor, buttonName);
     if (button == nullptr || button->onClick == nullptr)
         return false;
@@ -250,15 +273,8 @@ bool captureSlopePopup (const juce::File& outputDirectory)
     std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
     if (editor == nullptr)
         return false;
-    auto base = editor->createComponentSnapshot (
-        editor->getLocalBounds(), true, 1.0f);
-    if (! imageUsesLightPalette (base, 1.0f))
-    {
-        auto* brand = findButton (*editor, "default_distortion");
-        if (brand == nullptr || brand->onClick == nullptr)
-            return false;
-        brand->onClick();
-    }
+    editor->setSize (dd::ui::designWidth, dd::ui::expandedHeight);
+    forcePalette (*editor, true);
     auto* panel = findMultibandPanel (*editor);
     if (panel == nullptr)
         return false;
@@ -294,6 +310,49 @@ bool captureSlopePopup (const juce::File& outputDirectory)
     return false;
 }
 
+bool captureSettings (const juce::File& outputDirectory)
+{
+    dd::DefaultDistortionAudioProcessor processor;
+    processor.setRateAndBufferSizeDetails (48000.0, 512);
+    processor.prepareToPlay (48000.0, 512);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
+    if (editor == nullptr)
+        return false;
+    editor->setSize (dd::ui::designWidth, dd::ui::compactHeight);
+    forcePalette (*editor, true);
+    auto* brand = findButton (*editor, "default_distortion");
+    if (brand == nullptr || brand->onClick == nullptr)
+        return false;
+    brand->onClick();
+    const auto image = editor->createComponentSnapshot (
+        editor->getLocalBounds(), true, 1.0f);
+    return writePng (
+        image, outputDirectory.getChildFile ("settings-light-1x.png"));
+}
+
+bool captureUpdateAvailable (const juce::File& outputDirectory)
+{
+    dd::DefaultDistortionAudioProcessor processor;
+    processor.setRateAndBufferSizeDetails (48000.0, 512);
+    processor.prepareToPlay (48000.0, 512);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
+    if (editor == nullptr)
+        return false;
+    editor->setSize (dd::ui::designWidth, dd::ui::compactHeight);
+    forcePalette (*editor, true);
+    auto* overlay = findUpdateOverlay (*editor);
+    if (overlay == nullptr)
+        return false;
+    overlay->setLatestVersion ("0.10.0");
+    overlay->setVisible (true);
+    overlay->toFront (false);
+    const auto image = editor->createComponentSnapshot (
+        editor->getLocalBounds(), true, 1.0f);
+    return writePng (
+        image,
+        outputDirectory.getChildFile ("update-available-light-1x.png"));
+}
+
 juce::String fileStemForMode (int displayPosition, int mode)
 {
     auto name = dd::DistortionEngine::getModeNames()[static_cast<size_t> (mode)]
@@ -309,6 +368,15 @@ juce::String fileStemForMode (int displayPosition, int mode)
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
+    const auto originalScale = default_family::EditorPreferences::loadScale();
+    struct ScaleRestorer
+    {
+        float scale;
+        ~ScaleRestorer()
+        {
+            default_family::EditorPreferences::saveScale (scale);
+        }
+    } restoreScale { originalScale };
     const auto outputDirectory = argc > 1
         ? juce::File (juce::String::fromUTF8 (argv[1]))
         : juce::File::getCurrentWorkingDirectory().getChildFile ("ui-captures");
@@ -368,6 +436,16 @@ int main (int argc, char** argv)
         dd::DistortionEngine::getModeForDisplayPosition (9),
         1.0f, true, true) && ok;
     ok = capture (
+        outputDirectory, "route-off-light-1.25x",
+        true, true, 4, true,
+        dd::DistortionEngine::getModeForDisplayPosition (9),
+        1.0f, true, false, false, false, 1.25f) && ok;
+    ok = capture (
+        outputDirectory, "route-on-light-1.25x",
+        true, true, 4, false,
+        dd::DistortionEngine::getModeForDisplayPosition (9),
+        1.0f, true, true, false, false, 1.25f) && ok;
+    ok = capture (
         outputDirectory, "prototype-crossover-hover-light-1x",
         true, true, 4, true,
         dd::DistortionEngine::getModeForDisplayPosition (9),
@@ -378,11 +456,13 @@ int main (int argc, char** argv)
         640, 182, false) && ok;
     ok = capturePopup (
         outputDirectory, "popup-os-light-1x", "OS OFF",
-        59, 112, false) && ok;
+        60, 112, false) && ok;
     ok = capturePopup (
         outputDirectory, "popup-phase-light-1x", "PHASE  MINIMUM",
         100, 60, true) && ok;
     ok = captureSlopePopup (outputDirectory) && ok;
+    ok = captureSettings (outputDirectory) && ok;
+    ok = captureUpdateAvailable (outputDirectory) && ok;
 
     for (int displayPosition = 0;
          displayPosition < dd::DistortionEngine::modeCount;

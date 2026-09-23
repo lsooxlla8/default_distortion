@@ -3,15 +3,17 @@
 ## Signal flow
 
 ```text
-raw input ───────────────► stereo-linked peak detector ─► Dynamic Drive offset
-    │
-    ▼
-Input HP (3rd-order Butterworth, 18 dB/oct)
+raw input ─┬─► Input HP [D off] ─► contextual audio path
+           └─► Input HP [D on]  ─► Dynamic Drive detector ─► Drive offset ─┐
+                                                                          │
+contextual audio path                                                     │
     │
     ├──────────────► latency-aligned contextual dry
     │
     ▼
-tone pre ─► saturation/oversampling ─► tone post ─► M/S or T/S placement
+tone pre ─► saturation/oversampling ◄─────────────────────────────────────┘
+                          │
+                          └─► tone post ─► M/S or T/S placement
     │                                                │
     │                             Smart Auto Gain observation
     │                                                │
@@ -24,11 +26,13 @@ Output LP (3rd-order Butterworth, 18 dB/oct)
 global Output ─► global bypass/latency guard ─► output
 ```
 
-The detector always receives the complete raw plug-in input before Input HP,
-routing, or multiband splitting. Unlinked bands keep independent envelope
-state while receiving the same detector signal. Smart Auto Gain retains its
-0.8 measurement lifecycle and observes the latency-aligned dry and routed wet
-signals before makeup, Mix, Output LP, and global Output.
+With the Input HP `D` button off, the filter processes the main audio signal and
+the Dynamic detector receives the unfiltered source. With `D` on, the main audio
+remains unfiltered and the same HP processes only the detector signal. Linked
+Multiband uses the shared full-range detector; unlinked Multiband applies each
+band's HP route to that band's split-signal detector. Smart Auto Gain retains
+its 0.8 measurement lifecycle and observes the latency-aligned dry and routed
+wet signals before makeup, Mix, Output LP, and global Output.
 
 ## New parameter contract
 
@@ -37,8 +41,9 @@ signals before makeup, Mix, Output LP, and global Output.
 | Route | M/S, T/S | M/S | Selects the placement domain |
 | Placement | -100…+100% | 0% | Whole signal at 0; Mid/Transient at -100; Side/Sustain at +100 |
 | Dynamic | -100…+100% | 0% | `clamp(base Drive + envelope × Dynamic × 36 dB, 0, 36 dB)` |
-| Speed | 0…100% | 50% | Controls detector attack/release |
-| Input HP | OFF/0…200 Hz | OFF | Pre-saturation 18 dB/oct Butterworth high-pass |
+| Speed | 0…100% | 100% | Controls detector attack/release |
+| Input HP | OFF/0…2 kHz | OFF | 18 dB/oct Butterworth HP, routed to audio or detector |
+| Input HP D | Audio, Detector | Audio | Chooses whether Input HP processes the main signal or only Dynamic's detector |
 | Output LP | 2 kHz…20 kHz/OFF | OFF | Post-Mix 18 dB/oct Butterworth low-pass |
 
 The filter cutoff coefficients use logarithmic parameter ranges, 25 ms control

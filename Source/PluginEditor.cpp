@@ -11,8 +11,6 @@ namespace dd
 {
 namespace
 {
-const auto lightPalette = juce::Colour (0xfff6f6f6);
-const auto darkPalette = juce::Colour (0xff050505);
 constexpr std::array<float, MultibandParameters::maximumCrossovers>
     defaultCrossoverFrequencies { 100.0f, 500.0f, 2000.0f };
 const std::array<juce::String, DistortionEngine::modeCount>
@@ -28,31 +26,12 @@ const std::array<juce::String, DistortionEngine::modeCount>
         "RESONANT FEEDBACK CLIP", "DYNAMIC SAG"
     };
 
-juce::PropertiesFile& themeProperties()
+juce::String inputHpRouteText (bool detector)
 {
-    static juce::PropertiesFile properties ([]
-    {
-        juce::PropertiesFile::Options options;
-        options.applicationName = "default_distortion-ui";
-        options.filenameSuffix = "settings";
-        options.folderName = "icanseesounds";
-        options.osxLibrarySubFolder = "Application Support";
-        options.millisecondsBeforeSaving = 0;
-        return options;
-    }());
-    return properties;
-}
-
-bool loadLightTheme()
-{
-    return themeProperties().getBoolValue ("lightTheme", true);
-}
-
-void saveLightTheme (bool light)
-{
-    auto& properties = themeProperties();
-    properties.setValue ("lightTheme", light);
-    properties.saveIfNeeded();
+    return juce::String { "HP " }
+        + juce::String::charToString (static_cast<juce::juce_wchar> (
+            detector ? 0x2191 : 0x2192))
+        + (detector ? " DYN" : " IN");
 }
 
 juce::Colour foregroundOf (const juce::Component& component)
@@ -165,6 +144,92 @@ bool differs (float first, float second) noexcept
 }
 
 } // namespace
+
+UpdateAvailableOverlay::UpdateAvailableOverlay()
+{
+    setName ("Update available overlay");
+    setVisible (false);
+    setInterceptsMouseClicks (true, true);
+    for (auto* button : { &openWebsiteButton, &laterButton })
+    {
+        button->setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        button->setWantsKeyboardFocus (false);
+        addAndMakeVisible (*button);
+    }
+    openWebsiteButton.onClick = [this]
+    {
+        if (onOpenWebsite)
+            onOpenWebsite();
+    };
+    laterButton.onClick = [this]
+    {
+        if (onDismiss)
+            onDismiss();
+    };
+}
+
+void UpdateAvailableOverlay::setLatestVersion (const juce::String& version)
+{
+    latestVersion = version;
+    repaint();
+}
+
+juce::Rectangle<int> UpdateAvailableOverlay::panelBounds() const
+{
+    const auto scale = scaleOf (*this);
+    const auto margin = juce::roundToInt (20.0f * scale);
+    const auto width = juce::jmin (
+        getWidth() - 2 * margin, juce::roundToInt (440.0f * scale));
+    const auto height = juce::jmin (
+        getHeight() - 2 * margin, juce::roundToInt (164.0f * scale));
+    return getLocalBounds().withSizeKeepingCentre (
+        juce::jmax (1, width), juce::jmax (1, height));
+}
+
+void UpdateAvailableOverlay::paint (juce::Graphics& graphics)
+{
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    const auto scale = scaleOf (*this);
+    graphics.fillAll (background.withAlpha (0.90f));
+
+    const auto panel = panelBounds();
+    graphics.setColour (background);
+    graphics.fillRect (panel);
+    graphics.setColour (foreground);
+    graphics.drawRect (
+        panel, juce::jmax (1, juce::roundToInt (2.0f * scale)));
+
+    auto text = panel.reduced (juce::roundToInt (20.0f * scale));
+    const auto buttonHeight = juce::roundToInt (34.0f * scale);
+    text.removeFromBottom (buttonHeight + juce::roundToInt (16.0f * scale));
+    auto title = text.removeFromTop (juce::roundToInt (32.0f * scale));
+    drawPrototypeText (
+        graphics, "UPDATE AVAILABLE", title.toFloat(), 13.0f, true,
+        0.06f, foreground, juce::Justification::centredLeft, scale);
+    const auto message = "VERSION " + latestVersion
+        + " IS AVAILABLE. DOWNLOAD IT FROM DEFAULT-AUDIO.";
+    graphics.setColour (foreground);
+    graphics.setFont (trackedMonoFont (10.5f, false, 0.02f, scale));
+    graphics.drawFittedText (
+        message,
+        text,
+        juce::Justification::centredLeft,
+        2,
+        1.0f);
+}
+
+void UpdateAvailableOverlay::resized()
+{
+    const auto scale = scaleOf (*this);
+    auto buttons = panelBounds().reduced (juce::roundToInt (20.0f * scale));
+    buttons = buttons.removeFromBottom (juce::roundToInt (34.0f * scale));
+    const auto gap = juce::roundToInt (8.0f * scale);
+    const auto laterWidth = juce::roundToInt (92.0f * scale);
+    laterButton.setBounds (buttons.removeFromRight (laterWidth));
+    buttons.removeFromRight (gap);
+    openWebsiteButton.setBounds (buttons);
+}
 
 class PrototypeSimpleMenuWindow final : public juce::Component
 {
@@ -677,6 +742,28 @@ void GeometricLookAndFeel::setInverted (bool shouldBeInverted)
     applyPalette();
 }
 
+void GeometricLookAndFeel::setThemeColours (
+    juce::Colour lightBackground,
+    juce::Colour lightForeground,
+    juce::Colour darkBackground,
+    juce::Colour darkForeground)
+{
+    lightBackground = lightBackground.withAlpha (1.0f);
+    lightForeground = lightForeground.withAlpha (1.0f);
+    darkBackground = darkBackground.withAlpha (1.0f);
+    darkForeground = darkForeground.withAlpha (1.0f);
+    if (lightBackgroundColour == lightBackground
+        && lightForegroundColour == lightForeground
+        && darkBackgroundColour == darkBackground
+        && darkForegroundColour == darkForeground)
+        return;
+    lightBackgroundColour = lightBackground;
+    lightForegroundColour = lightForeground;
+    darkBackgroundColour = darkBackground;
+    darkForegroundColour = darkForeground;
+    applyPalette();
+}
+
 void GeometricLookAndFeel::setUiScale (float newScale) noexcept
 {
     uiScale = juce::jlimit (0.5f, 3.0f, newScale);
@@ -684,8 +771,10 @@ void GeometricLookAndFeel::setUiScale (float newScale) noexcept
 
 void GeometricLookAndFeel::applyPalette()
 {
-    const auto foreground = inverted ? darkPalette : lightPalette;
-    const auto background = inverted ? lightPalette : darkPalette;
+    const auto foreground = inverted
+        ? lightForegroundColour : darkForegroundColour;
+    const auto background = inverted
+        ? lightBackgroundColour : darkBackgroundColour;
     const auto muted = foreground.interpolatedWith (background, 0.28f);
 
     setColour (foregroundColourId, foreground);
@@ -703,6 +792,325 @@ void GeometricLookAndFeel::applyPalette()
     setColour (juce::PopupMenu::textColourId, foreground);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, foreground);
     setColour (juce::PopupMenu::highlightedTextColourId, background);
+}
+
+DistortionSettingsOverlay::DistortionSettingsOverlay (
+    juce::AudioProcessorValueTreeState& parameters)
+{
+    setOpaque (true);
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    const auto configure = [this] (VerticalDragSlider& slider,
+                                   const juce::String& name,
+                                   double minimum,
+                                   double maximum,
+                                   double reset)
+    {
+        slider.setName (name);
+        slider.setRange (minimum, maximum, 0.1);
+        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        slider.setTextBoxStyle (
+            juce::Slider::TextBoxLeft, false, 69, 18);
+        slider.setMouseDragSensitivity (180);
+        slider.setDoubleClickReturnValue (true, reset);
+        slider.setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        slider.textFromValueFunction = [] (double value)
+        {
+            return juce::String (juce::roundToInt (value)) + "%";
+        };
+        addAndMakeVisible (slider);
+    };
+    configure (transientStrength, "T/S STRENGTH", 0.0, 100.0, 100.0);
+    configure (transientBalance, "T/S BALANCE", -50.0, 50.0, 0.0);
+    transientBalance.textFromValueFunction = [] (double value)
+    {
+        const auto rounded = juce::roundToInt (value);
+        return juce::String (rounded > 0 ? "+" : "")
+            + juce::String (rounded) + "%";
+    };
+    configure (transientHold, "T/S HOLD", 0.0, 100.0, 50.0);
+    configure (transientSmooth, "T/S SMOOTH", 0.0, 100.0, 50.0);
+    transientStrengthAttachment = std::make_unique<SliderAttachment> (
+        parameters, ParamIDs::transientStrength, transientStrength);
+    transientBalanceAttachment = std::make_unique<SliderAttachment> (
+        parameters, ParamIDs::transientBalance, transientBalance);
+    transientHoldAttachment = std::make_unique<SliderAttachment> (
+        parameters, ParamIDs::transientHold, transientHold);
+    transientSmoothAttachment = std::make_unique<SliderAttachment> (
+        parameters, ParamIDs::transientSmooth, transientSmooth);
+}
+
+DistortionSettingsOverlay::~DistortionSettingsOverlay()
+{
+    dismissColourEditor();
+}
+
+void DistortionSettingsOverlay::setState (default_family::ThemeState next)
+{
+    state = next;
+    repaint();
+}
+
+void DistortionSettingsOverlay::setStatistics (Statistics next)
+{
+    statistics = next;
+    if (isVisible())
+        repaint();
+}
+
+DistortionSettingsOverlay::Cell DistortionSettingsOverlay::cellAt (
+    juce::Point<int> point) const noexcept
+{
+    if (point.y < 0 || point.y >= juce::roundToInt (
+            54.0f * static_cast<float> (getHeight()) / 182.0f))
+        return Cell::none;
+    const auto column = juce::jlimit (
+        0, 4, point.x * 5 / juce::jmax (1, getWidth()));
+    constexpr std::array<Cell, 5> cells {
+        Cell::theme,
+        Cell::lightBackground,
+        Cell::lightForeground,
+        Cell::darkBackground,
+        Cell::darkForeground
+    };
+    return cells[static_cast<size_t> (column)];
+}
+
+void DistortionSettingsOverlay::dismissColourEditor()
+{
+    if (colourSelector != nullptr)
+        colourSelector->removeChangeListener (this);
+    colourSelector.reset();
+    editedColour = Cell::none;
+    for (auto* slider : {
+             &transientStrength, &transientBalance,
+             &transientHold, &transientSmooth })
+        slider->setVisible (true);
+    repaint();
+}
+
+void DistortionSettingsOverlay::showColourEditor (Cell cell)
+{
+    dismissColourEditor();
+    editedColour = cell;
+    const auto colour = cell == Cell::lightBackground ? state.lightBackground
+        : cell == Cell::lightForeground ? state.lightForeground
+        : cell == Cell::darkBackground ? state.darkBackground
+        : state.darkForeground;
+    colourSelector = std::make_unique<juce::ColourSelector> (
+        juce::ColourSelector::showColourAtTop
+        | juce::ColourSelector::showSliders
+        | juce::ColourSelector::showColourspace);
+    colourSelector->setName ("Theme colour editor");
+    colourSelector->setCurrentColour (colour, juce::dontSendNotification);
+    colourSelector->addChangeListener (this);
+    addAndMakeVisible (*colourSelector);
+    for (auto* slider : {
+             &transientStrength, &transientBalance,
+             &transientHold, &transientSmooth })
+        slider->setVisible (false);
+    resized();
+    repaint();
+}
+
+void DistortionSettingsOverlay::changeListenerCallback (
+    juce::ChangeBroadcaster* source)
+{
+    if (source != colourSelector.get() || editedColour == Cell::none)
+        return;
+    const auto colour = colourSelector->getCurrentColour().withAlpha (1.0f);
+    if (editedColour == Cell::lightBackground)
+        state.lightBackground = colour;
+    else if (editedColour == Cell::lightForeground)
+        state.lightForeground = colour;
+    else if (editedColour == Cell::darkBackground)
+        state.darkBackground = colour;
+    else if (editedColour == Cell::darkForeground)
+        state.darkForeground = colour;
+    if (onStateChange)
+        onStateChange (state);
+    repaint();
+}
+
+void DistortionSettingsOverlay::mouseDown (const juce::MouseEvent& event)
+{
+    const auto cell = cellAt (event.getPosition());
+    if (cell == Cell::none)
+        return;
+    if (event.mods.isRightButtonDown())
+    {
+        if (cell == Cell::lightBackground)
+            state.lightBackground = juce::Colour (0xfff6f6f6);
+        else if (cell == Cell::lightForeground)
+            state.lightForeground = juce::Colour (0xff050505);
+        else if (cell == Cell::darkBackground)
+            state.darkBackground = juce::Colour (0xff050505);
+        else if (cell == Cell::darkForeground)
+            state.darkForeground = juce::Colour (0xfff6f6f6);
+        else
+            return;
+        dismissColourEditor();
+        if (onStateChange)
+            onStateChange (state);
+        return;
+    }
+    if (! event.mods.isLeftButtonDown())
+        return;
+    if (cell == Cell::theme)
+    {
+        dismissColourEditor();
+        state.mode = (state.mode + 1) % 3;
+        if (onStateChange)
+            onStateChange (state);
+        repaint();
+        return;
+    }
+    showColourEditor (cell);
+}
+
+void DistortionSettingsOverlay::resized()
+{
+    if (colourSelector != nullptr)
+    {
+        const auto top = juce::roundToInt (
+            54.0f * static_cast<float> (getHeight()) / 182.0f);
+        colourSelector->setBounds (0, top, getWidth(), getHeight() - top);
+        return;
+    }
+    const auto top = juce::roundToInt (
+        54.0f * static_cast<float> (getHeight()) / 182.0f);
+    const auto bottom = juce::roundToInt (
+        118.0f * static_cast<float> (getHeight()) / 182.0f);
+    const auto cellWidth = getWidth() / 4;
+    VerticalDragSlider* sliders[] = {
+        &transientStrength, &transientBalance,
+        &transientHold, &transientSmooth
+    };
+    for (int index = 0; index < 4; ++index)
+        sliders[index]->setBounds (
+            index * cellWidth,
+            top,
+            index == 3 ? getWidth() - 3 * cellWidth : cellWidth,
+            bottom - top);
+}
+
+void DistortionSettingsOverlay::paint (juce::Graphics& graphics)
+{
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    const auto sx = static_cast<float> (getWidth()) / 640.0f;
+    const auto sy = static_cast<float> (getHeight()) / 182.0f;
+    const auto scale = juce::jmin (sx, sy);
+    const auto line = juce::jmax (1, juce::roundToInt (scale));
+    const auto rect = [sx, sy] (float x, float y, float width, float height)
+    {
+        return juce::Rectangle<int> {
+            juce::roundToInt (x * sx), juce::roundToInt (y * sy),
+            juce::roundToInt (width * sx), juce::roundToInt (height * sy)
+        };
+    };
+    const auto text = [&] (const juce::String& value,
+                           juce::Rectangle<int> area,
+                           float size,
+                           float alpha)
+    {
+        drawPrototypeText (
+            graphics, value, area.toFloat(), size, true, 0.0f,
+            foreground.withAlpha (alpha),
+            juce::Justification::centredLeft, scale);
+    };
+    const auto setting = [&] (const juce::String& label,
+                              const juce::String& value,
+                              juce::Rectangle<int> area)
+    {
+        auto content = area.reduced (8 * line, 4 * line);
+        text (label, content.withHeight (12 * line), 9.0f, 0.72f);
+        text (value, content.withTrimmedTop (17 * line), 9.5f, 1.0f);
+    };
+    const auto colourSetting = [&] (const juce::String& label,
+                                    juce::Colour colour,
+                                    juce::Rectangle<int> area)
+    {
+        auto content = area.reduced (8 * line, 4 * line);
+        text (label, content.withHeight (12 * line), 9.0f, 0.72f);
+        auto swatch = content.withTrimmedTop (19 * line)
+                             .removeFromLeft (20 * line)
+                             .withHeight (16 * line);
+        graphics.setColour (colour);
+        graphics.fillRect (swatch);
+        graphics.setColour (foreground);
+        graphics.drawRect (swatch, line);
+        text ("#" + colour.toDisplayString (false).toUpperCase(),
+              content.withTrimmedLeft (27 * line).withTrimmedTop (16 * line),
+              8.0f, 1.0f);
+    };
+    const auto signedDb = [] (float value, const char* suffix)
+    {
+        if (std::abs (value) < 0.05f)
+            value = 0.0f;
+        return juce::String (value > 0.0f ? "+" : "")
+            + juce::String (value, 1) + suffix;
+    };
+    const auto stat = [&] (const juce::String& label,
+                           const juce::String& value,
+                           juce::Rectangle<int> area)
+    {
+        auto content = area.reduced (8 * line, 5 * line);
+        text (label, content.withHeight (12 * line), 9.0f, 0.72f);
+        text (value, content.withTrimmedTop (19 * line), 11.0f, 1.0f);
+    };
+
+    graphics.fillAll (background);
+    graphics.setColour (foreground);
+    graphics.drawRect (getLocalBounds(), line);
+    graphics.fillRect (rect (0, 54, 640, 1));
+    graphics.fillRect (rect (0, 118, 640, 1));
+    for (int column = 1; column < 5; ++column)
+        graphics.fillRect (rect (
+            128.0f * static_cast<float> (column), 0, 1, 54));
+    for (int column = 1; column < 4; ++column)
+        graphics.fillRect (rect (
+            160.0f * static_cast<float> (column), 54, 1, 64));
+    for (int column = 1; column < 4; ++column)
+        graphics.fillRect (rect (
+            160.0f * static_cast<float> (column), 118, 1, 64));
+
+    static constexpr std::array<const char*, 3> themes {
+        "AUTO", "WHITE", "BLACK"
+    };
+    setting ("THEME", themes[static_cast<size_t> (
+                 juce::jlimit (0, 2, state.mode))], rect (0, 0, 128, 54));
+    colourSetting ("WHITE BACKGROUND", state.lightBackground,
+                   rect (128, 0, 128, 54));
+    colourSetting ("WHITE INK", state.lightForeground,
+                   rect (256, 0, 128, 54));
+    colourSetting ("BLACK BACKGROUND", state.darkBackground,
+                   rect (384, 0, 128, 54));
+    colourSetting ("BLACK INK", state.darkForeground,
+                   rect (512, 0, 128, 54));
+
+    if (colourSelector != nullptr)
+        return;
+    text ("T/S STRENGTH", rect (8, 59, 120, 12), 9.0f, 0.72f);
+    text ("T/S BALANCE", rect (168, 59, 120, 12), 9.0f, 0.72f);
+    text ("T/S HOLD", rect (328, 59, 120, 12), 9.0f, 0.72f);
+    text ("T/S SMOOTH", rect (488, 59, 120, 12), 9.0f, 0.72f);
+    stat ("CREST DELTA", statistics.timeValid
+            ? signedDb (statistics.crestDeltaDb, " dB") : "--",
+          rect (0, 118, 160, 64));
+    stat ("LEVEL DELTA", statistics.timeValid
+            ? signedDb (statistics.levelDeltaDb, " dB") : "--",
+          rect (160, 118, 160, 64));
+    stat ("TILT DELTA", statistics.spectrumValid
+            ? signedDb (statistics.tiltDeltaDbPerOctave, " dB/oct") : "--",
+          rect (320, 118, 160, 64));
+    auto smartText = juce::String { "OFF" };
+    if (statistics.smartEnabled)
+        smartText = statistics.smartLocked
+            ? "LOCKED  " + signedDb (statistics.smartGainDb, " dB")
+            : "MEASURE  "
+                + juce::String (juce::roundToInt (
+                    statistics.smartProgress * 100.0f)) + "%";
+    stat ("SMART GAIN", smartText, rect (480, 118, 160, 64));
 }
 
 void GeometricLookAndFeel::drawRotarySlider (
@@ -862,6 +1270,17 @@ void GeometricLookAndFeel::drawLabel (juce::Graphics& graphics,
         uiScale);
 }
 
+void GeometricLookAndFeel::drawTextEditorOutline (
+    juce::Graphics& graphics,
+    int width,
+    int height,
+    juce::TextEditor& editor)
+{
+    juce::ignoreUnused (editor);
+    graphics.setColour (findColour (foregroundColourId));
+    graphics.drawRect (0, 0, width, height, 1);
+}
+
 void GeometricLookAndFeel::drawComboBox (
     juce::Graphics& graphics,
     int width,
@@ -1001,20 +1420,30 @@ void ResettableSlider::mouseDown (const juce::MouseEvent& event)
     juce::Slider::mouseDown (event);
 }
 
-void ResettableSlider::mouseDoubleClick (const juce::MouseEvent&)
+void ResettableSlider::mouseDoubleClick (const juce::MouseEvent& event)
 {
-    showTextBox();
+    if (event.mods.isLeftButtonDown())
+        showTextBox();
 }
 
 void VerticalDragSlider::mouseDown (const juce::MouseEvent& event)
 {
+    verticalDragActive = event.mods.isLeftButtonDown()
+        && ! event.mods.isPopupMenu()
+        && ! event.mods.isRightButtonDown();
+    if (! verticalDragActive)
+    {
+        ResettableSlider::mouseDown (event);
+        return;
+    }
     dragStartProportion = valueToProportionOfLength (getValue());
     ResettableSlider::mouseDown (event);
 }
 
 void VerticalDragSlider::mouseDrag (const juce::MouseEvent& event)
 {
-    if (! isEnabled())
+    if (! isEnabled() || ! verticalDragActive
+        || ! event.mods.isLeftButtonDown())
         return;
     const auto fine = event.mods.isShiftDown() ? 0.2 : 1.0;
     const auto nextProportion = juce::jlimit (
@@ -1028,6 +1457,12 @@ void VerticalDragSlider::mouseDrag (const juce::MouseEvent& event)
     setValue (
         proportionOfLengthToValue (nextProportion),
         juce::sendNotificationSync);
+}
+
+void VerticalDragSlider::mouseUp (const juce::MouseEvent& event)
+{
+    verticalDragActive = false;
+    ResettableSlider::mouseUp (event);
 }
 
 ParameterControl::ParameterControl (juce::String title)
@@ -1191,7 +1626,11 @@ AlgorithmButton::AlgorithmButton()
 
 void AlgorithmButton::setMode (int displayPosition, juce::String name)
 {
-    number = juce::jlimit (1, DistortionEngine::modeCount, displayPosition + 1);
+    const auto nextNumber = juce::jlimit (
+        1, DistortionEngine::modeCount, displayPosition + 1);
+    if (number == nextNumber && modeName == name)
+        return;
+    number = nextNumber;
     modeName = std::move (name);
     setButtonText (
         juce::String (number).paddedLeft ('0', 2) + "  " + modeName);
@@ -1250,6 +1689,8 @@ HeaderActionButton::HeaderActionButton (juce::String label,
 
 void HeaderActionButton::setValueText (juce::String value)
 {
+    if (valueText == value)
+        return;
     valueText = std::move (value);
     setButtonText (headerLabel + " " + valueText);
     repaint();
@@ -1314,7 +1755,9 @@ void StripButton::paintButton (juce::Graphics& graphics,
                                bool isDown)
 {
     juce::ignoreUnused (isHighlighted);
-    const auto active = getToggleState() || isDown;
+    const auto active = previewToggleOnPress
+        ? getDisplayedToggleState()
+        : getToggleState() || isDown;
     const auto ink = foregroundOf (*this);
     const auto paper = backgroundOf (*this);
     graphics.fillAll (active ? ink : paper);
@@ -1353,6 +1796,22 @@ void StripButton::paintButton (juce::Graphics& graphics,
     }
 }
 
+void StripButton::mouseDown (const juce::MouseEvent& event)
+{
+    juce::TextButton::mouseDown (event);
+    if (previewToggleOnPress)
+        if (auto* parent = getParentComponent())
+            parent->repaint();
+}
+
+void StripButton::mouseUp (const juce::MouseEvent& event)
+{
+    juce::TextButton::mouseUp (event);
+    if (previewToggleOnPress)
+        if (auto* parent = getParentComponent())
+            parent->repaint();
+}
+
 RtaBandButton::RtaBandButton (juce::String text)
     : juce::TextButton (std::move (text))
 {
@@ -1379,6 +1838,56 @@ void RtaBandButton::paintButton (juce::Graphics& graphics,
         9.0f, true, 0.0f,
         active ? paper : ink,
         juce::Justification::centred, scaleOf (*this));
+}
+
+InputHpRouteButton::InputHpRouteButton()
+    : juce::TextButton (inputHpRouteText (false))
+{
+    setOpaque (true);
+    setClickingTogglesState (true);
+    setWantsKeyboardFocus (false);
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    onStateChange = [this]
+    {
+        setButtonText (inputHpRouteText (getToggleState()));
+    };
+}
+
+void InputHpRouteButton::paintButton (juce::Graphics& graphics,
+                                      bool isHighlighted,
+                                      bool isDown)
+{
+    const auto active = isDown ? ! getToggleState() : getToggleState();
+    const auto scale = scaleOf (*this);
+    const auto ink = foregroundOf (*this);
+    const auto paper = backgroundOf (*this);
+    const auto fillColour = active ? ink : paper;
+    graphics.fillAll (fillColour);
+    graphics.setColour (ink);
+    auto border = getLocalBounds().toFloat();
+    graphics.fillRect (border.removeFromTop (scale));
+    graphics.fillRect (border.removeFromBottom (scale));
+    graphics.fillRect (border.removeFromLeft (scale));
+    graphics.fillRect (border.removeFromRight (scale));
+    juce::ignoreUnused (isHighlighted);
+    const auto arrowColour = active ? paper : ink;
+    const auto iconScale = 0.8f * scale;
+    const auto arrowX = 0.5f * static_cast<float> (getWidth());
+    const auto arrowTop = 0.5f * (
+        static_cast<float> (getHeight()) - 20.0f * iconScale);
+    juce::Path stem;
+    stem.addRectangle (arrowX - 0.6f * iconScale,
+                       arrowTop + 6.5f * iconScale,
+                       1.2f * iconScale, 13.0f * iconScale);
+    juce::Path head;
+    head.addTriangle (arrowX - 4.15f * iconScale,
+                      arrowTop + 8.5f * iconScale,
+                      arrowX, arrowTop + 0.5f * iconScale,
+                      arrowX + 4.15f * iconScale,
+                      arrowTop + 8.5f * iconScale);
+    graphics.setColour (arrowColour);
+    graphics.fillPath (stem);
+    graphics.fillPath (head);
 }
 
 VerticalTextButton::VerticalTextButton()
@@ -1513,7 +2022,11 @@ void VerticalTextSlider::paint (juce::Graphics& graphics)
 
 void SmartGainButton::setLoadingState (float progress, bool isLoading)
 {
-    loadingProgress = juce::jlimit (0.0f, 1.0f, progress);
+    const auto nextProgress = juce::jlimit (0.0f, 1.0f, progress);
+    if (! isLoading && ! loading
+        && std::abs (nextProgress - loadingProgress) < 1.0e-6f)
+        return;
+    loadingProgress = nextProgress;
     loading = isLoading;
     repaint();
 }
@@ -1531,10 +2044,10 @@ void SmartGainButton::paintButton (
     const auto scale = scaleOf (*this);
     auto track = getLocalBounds().toFloat().reduced (5.0f * scale);
     track = track.removeFromBottom (5.0f * scale);
-    const auto background = backgroundOf (*this);
-    graphics.setColour (background.withAlpha (0.22f));
+    const auto foreground = foregroundOf (*this);
+    graphics.setColour (foreground.withAlpha (0.18f));
     graphics.fillRect (track);
-    graphics.setColour (background);
+    graphics.setColour (foreground);
     graphics.fillRect (track.withWidth (
         track.getWidth() * loadingProgress));
 
@@ -1553,6 +2066,10 @@ void SmartGainButton::paintButton (
 ResponseDisplay::ResponseDisplay (DefaultDistortionAudioProcessor& owner)
     : processor (owner)
 {
+    // Some plugin hosts briefly report the editor as hidden while attaching
+    // its peer and never send the matching visibility callback afterwards.
+    // Keep the lightweight refresh timer alive so the graph can recover as
+    // soon as it actually becomes visible.
     startTimerHz (30);
 }
 
@@ -1561,15 +2078,40 @@ ResponseDisplay::~ResponseDisplay()
     stopTimer();
 }
 
+void ResponseDisplay::setRefreshActive (bool active)
+{
+    if (active == isTimerRunning())
+        return;
+    if (active)
+    {
+        startTimerHz (30);
+        repaint();
+    }
+    else
+        stopTimer();
+}
+
 LevelMeterPanel::LevelMeterPanel (DefaultDistortionAudioProcessor& owner)
     : processor (owner)
 {
-    startTimerHz (30);
 }
 
 LevelMeterPanel::~LevelMeterPanel()
 {
     stopTimer();
+}
+
+void LevelMeterPanel::setRefreshActive (bool active)
+{
+    if (active == isTimerRunning())
+        return;
+    if (active)
+    {
+        startTimerHz (30);
+        repaint();
+    }
+    else
+        stopTimer();
 }
 
 void LevelMeterPanel::timerCallback()
@@ -1739,8 +2281,12 @@ MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
 
     linkButton.onClick = [this]
     {
-        processor.setMultibandLinkedFromUi (
-            ! processor.getCurrentMultibandParameters().linked);
+        const auto linked =
+            ! processor.getCurrentMultibandParameters().linked;
+        processor.setMultibandLinkedFromUi (linked);
+        linkButton.setToggleState (linked, juce::dontSendNotification);
+        updateControls();
+        repaint();
     };
     bandCountButton.onClick = [this]
     {
@@ -1768,7 +2314,6 @@ MultibandPanel::MultibandPanel (DefaultDistortionAudioProcessor& owner)
     bindTrimControl (processor.getSelectedBand());
     setMouseCursor (juce::MouseCursor::NormalCursor);
     updateControls();
-    startTimerHz (30);
 }
 
 MultibandPanel::~MultibandPanel()
@@ -1777,6 +2322,17 @@ MultibandPanel::~MultibandPanel()
     endTrimDrag();
     trimAttachment.reset();
     processor.setSoloBand (-1);
+}
+
+void MultibandPanel::setAnalyzerActive (bool active)
+{
+    if (analyzerActive == active)
+        return;
+    analyzerActive = active;
+    if (active)
+        startTimerHz (30);
+    else
+        stopTimer();
 }
 
 void MultibandPanel::setParameter (const juce::String& id, float plainValue)
@@ -1975,6 +2531,7 @@ void MultibandPanel::writeBandParameters (
     write ("Dynamic", saturation.dynamicPercent);
     write ("Speed", saturation.speedPercent);
     write ("InputHp", saturation.inputHpHz);
+    write ("InputHpDetector", saturation.inputHpDetector ? 1.0f : 0.0f);
     write ("OutputLp", saturation.outputLpHz);
     write ("Bypass", values.bypass ? 1.0f : 0.0f);
     write ("Trim", values.trimDb);
@@ -2159,12 +2716,16 @@ void MultibandPanel::showSlopeMenu (int crossover)
 
 void MultibandPanel::timerCallback()
 {
-    if (processor.pullAnalyzerFrames (
+    const auto receivedSpectrum = processor.pullAnalyzerFrames (
         incomingInput.data(), incomingOutput.data(),
-        static_cast<int> (incomingInput.size())) != 0)
+        static_cast<int> (incomingInput.size())) != 0;
+    if (receivedSpectrum)
         updateSpectrum();
-    updateControls();
-    repaint();
+    if (isShowing())
+    {
+        updateControls();
+        repaint();
+    }
 }
 
 void MultibandPanel::updateSpectrum()
@@ -2190,6 +2751,52 @@ void MultibandPanel::updateSpectrum()
     };
     smoothSpectrum (incomingInput, inputSpectrum, averaging, decay);
     smoothSpectrum (incomingOutput, outputSpectrum, averaging, decay);
+
+    const auto maximumBin = juce::jmin (
+        fftSize / 2 - 1,
+        static_cast<int> (20000.0 * fftSize / rate));
+    const auto firstBin = juce::jmax (
+        1, static_cast<int> (20.0 * fftSize / rate));
+    const auto inputPeak = std::max_element (
+        inputSpectrum.begin() + firstBin,
+        inputSpectrum.begin() + maximumBin + 1);
+    spectrumStatistics.spectrumValid = inputPeak != inputSpectrum.end()
+        && *inputPeak > analyzerFloorDb + 6.0f;
+
+    const auto spectralTilt = [&] (const auto& spectrum)
+    {
+        auto peak = analyzerFloorDb;
+        for (int bin = firstBin; bin <= maximumBin; ++bin)
+            peak = juce::jmax (peak, spectrum[static_cast<size_t> (bin)]);
+        double sumWeight = 0.0;
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double sumXX = 0.0;
+        double sumXY = 0.0;
+        for (int bin = firstBin; bin <= maximumBin; ++bin)
+        {
+            const auto db = spectrum[static_cast<size_t> (bin)];
+            if (db < peak - 48.0f || db <= analyzerFloorDb + 1.0f)
+                continue;
+            const auto frequency = static_cast<double> (bin) * rate / fftSize;
+            const auto x = std::log2 (frequency / 1000.0);
+            const auto weight = std::pow (10.0, (db - peak) / 20.0);
+            sumWeight += weight;
+            sumX += weight * x;
+            sumY += weight * db;
+            sumXX += weight * x * x;
+            sumXY += weight * x * db;
+        }
+        const auto denominator = sumWeight * sumXX - sumX * sumX;
+        return std::abs (denominator) > 1.0e-12
+            ? static_cast<float> (
+                (sumWeight * sumXY - sumX * sumY) / denominator)
+            : 0.0f;
+    };
+    spectrumStatistics.tiltDeltaDbPerOctave = spectrumStatistics.spectrumValid
+        ? spectralTilt (outputSpectrum) - spectralTilt (inputSpectrum)
+        : 0.0f;
+
 }
 
 void MultibandPanel::updateControls()
@@ -2200,6 +2807,7 @@ void MultibandPanel::updateControls()
         laidOutBandCount = parameters.bandCount;
         resized();
     }
+    layoutBandButtons (parameters);
     const auto selected = juce::jlimit (
         0, parameters.bandCount - 1, processor.getSelectedBand());
     if (selected != processor.getSelectedBand())
@@ -2323,45 +2931,20 @@ void MultibandPanel::paint (juce::Graphics& graphics)
     const auto hasSpectrum = std::any_of (
         inputSpectrum.begin() + 1, inputSpectrum.end(),
         [] (float value) { return value > analyzerFloorDb + 0.1f; });
-    const auto fallbackPath = [&] (float offset, float strength)
-    {
-        juce::Path path;
-        for (int index = 0; index <= 130; ++index)
-        {
-            const auto indexFloat = static_cast<float> (index);
-            const auto x = bounds.getX()
-                + indexFloat / 130.0f * bounds.getWidth();
-            const auto shape = std::sin (indexFloat * 0.29f + offset)
-                + 0.52f * std::sin (indexFloat * 0.83f + offset * 1.7f)
-                + 0.26f * std::sin (indexFloat * 1.91f);
-            const auto envelope = 0.55f
-                + 0.45f * std::sin (juce::MathConstants<float>::pi
-                                    * indexFloat / 130.0f);
-            const auto y = bounds.getY() + 0.798f * bounds.getHeight()
-                - strength * scale * envelope * (2.2f + shape);
-            if (index == 0)
-                path.startNewSubPath (x, y);
-            else
-                path.lineTo (x, y);
-        }
-        return path;
-    };
     const auto drawSpectrum = [&] (const auto& spectrum,
                                    float lineAlpha,
-                                   float strokeWidth,
-                                   float fallbackOffset,
-                                   float fallbackStrength)
+                                   float strokeWidth)
     {
-        const auto path = hasSpectrum
-            ? makePath (spectrum)
-            : fallbackPath (fallbackOffset, fallbackStrength);
+        if (! hasSpectrum)
+            return;
+        const auto path = makePath (spectrum);
         graphics.setColour (foreground.withAlpha (lineAlpha));
         graphics.strokePath (
             path,
             juce::PathStrokeType (strokeWidth * scaleOf (*this)));
     };
-    drawSpectrum (inputSpectrum, 0.20f, 1.0f, 0.3f, 12.0f);
-    drawSpectrum (outputSpectrum, 0.48f, 1.5f, 1.1f, 15.0f);
+    drawSpectrum (inputSpectrum, 0.20f, 1.0f);
+    drawSpectrum (outputSpectrum, 0.48f, 1.5f);
 
     for (int band = 0; band < parameters.bandCount; ++band)
     {
@@ -2451,6 +3034,12 @@ void MultibandPanel::resized()
         component->setVisible (false);
 
     const auto parameters = processor.getCurrentMultibandParameters();
+    layoutBandButtons (parameters);
+}
+
+void MultibandPanel::layoutBandButtons (
+    const MultibandParameters& parameters)
+{
     const auto scale = scaleOf (*this);
     const auto analyzer = analyzerBounds();
     for (int band = 0; band < MultibandParameters::maximumBands; ++band)
@@ -2627,6 +3216,8 @@ void MultibandPanel::mouseDrag (const juce::MouseEvent& event)
             / ratio;
     frequency = juce::jlimit (lower, upper, frequency);
     setParameter (ParamIDs::crossoverFrequency (draggedCrossover), frequency);
+    layoutBandButtons (processor.getCurrentMultibandParameters());
+    repaint();
 }
 
 void MultibandPanel::mouseUp (const juce::MouseEvent&)
@@ -2637,18 +3228,14 @@ void MultibandPanel::mouseUp (const juce::MouseEvent&)
 
 void ResponseDisplay::timerCallback()
 {
-    repaint();
+    if (! isShowing())
+        return;
+    if (updateVisualization())
+        repaint();
 }
 
-void ResponseDisplay::paint (juce::Graphics& graphics)
+bool ResponseDisplay::updateVisualization()
 {
-    auto bounds = getLocalBounds().toFloat();
-    const auto scale = scaleOf (*this);
-    const auto foreground = foregroundOf (*this);
-    const auto background = backgroundOf (*this);
-    graphics.setColour (background);
-    graphics.fillRect (bounds);
-
     auto parameters = processor.getCurrentParameters();
     const auto multiband = processor.getCurrentMultibandParameters();
     if (multiband.enabled && ! multiband.linked)
@@ -2670,14 +3257,25 @@ void ResponseDisplay::paint (juce::Graphics& graphics)
         || parameters.stages != visualizedParameters.stages
         || parameters.quality != visualizedParameters.quality
         || std::abs (displaySampleRate - visualizedSampleRate) > 0.5;
-    if (visualizationChanged)
-    {
-        DistortionEngine::makeVisualization (
-            parameters, displaySampleRate, visualization);
-        visualizedParameters = parameters;
-        visualizedSampleRate = displaySampleRate;
-        visualizationValid = true;
-    }
+    if (! visualizationChanged)
+        return false;
+    DistortionEngine::makeVisualization (
+        parameters, displaySampleRate, visualization);
+    visualizedParameters = parameters;
+    visualizedSampleRate = displaySampleRate;
+    visualizationValid = true;
+    return true;
+}
+
+void ResponseDisplay::paint (juce::Graphics& graphics)
+{
+    auto bounds = getLocalBounds().toFloat();
+    const auto scale = scaleOf (*this);
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    graphics.setColour (background);
+    graphics.fillRect (bounds);
+    updateVisualization();
 
     auto graph = juce::Rectangle<float> {
         8.0f * scale,
@@ -2743,12 +3341,27 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
       ownerProcessor (owner),
       responseDisplay (owner),
       levelMeters (owner),
-      multibandPanel (owner)
+      multibandPanel (owner),
+      settingsOverlay (owner.parameters),
+      updateChecker (
+          [safeEditor = juce::Component::SafePointer<
+               DefaultDistortionAudioProcessorEditor> { this }]
+          (juce::String latestVersion)
+          {
+              if (safeEditor != nullptr)
+                  safeEditor->showUpdateAvailable (latestVersion);
+          })
 {
-    ownerProcessor.setAnalyzerEnabled (true);
-    lookAndFeel.setInverted (loadLightTheme());
+    themeState = default_family::ThemePreferences::load (true);
+    lookAndFeel.setThemeColours (
+        themeState.lightBackground, themeState.lightForeground,
+        themeState.darkBackground, themeState.darkForeground);
+    const auto dark = default_family::ThemePreferences::isDarkForHour (
+        themeState.mode, juce::Time::getCurrentTime().getHours());
+    lookAndFeel.setInverted (! dark);
     setLookAndFeel (&lookAndFeel);
     setOpaque (true);
+    setWantsKeyboardFocus (true);
     setResizable (true, false);
     const auto initiallyExpanded =
         ownerProcessor.getCurrentMultibandParameters().enabled;
@@ -2761,12 +3374,15 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
         initiallyExpanded ? ui::expandedHeight : ui::compactHeight,
         3 * ui::designWidth,
         3 * (initiallyExpanded ? ui::expandedHeight : ui::compactHeight));
+    const auto initialScale = default_family::EditorPreferences::loadScale();
     setSize (
-        ui::designWidth,
-        initiallyExpanded ? ui::expandedHeight : ui::compactHeight);
+        juce::roundToInt (ui::designWidth * initialScale),
+        juce::roundToInt (
+            (initiallyExpanded ? ui::expandedHeight : ui::compactHeight)
+            * initialScale));
 
     brandLabel.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    brandLabel.onClick = [this] { togglePalette(); };
+    brandLabel.onClick = [this] { toggleSettingsOverlay(); };
     addAndMakeVisible (brandLabel);
 
     modeButton.onClick = [this] { showModeMenu(); };
@@ -2791,13 +3407,23 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     };
     addAndMakeVisible (pluginPowerButton);
     addAndMakeVisible (asymStereoButton);
+    inputHpDetectorButton.setName ("Input HP Detector");
+    inputHpDetectorButton.setTitle (
+        "Route Input HP to the Dynamic detector");
+    addAndMakeVisible (inputHpDetectorButton);
     routeButton.onClick = [this] { cycleRoute(); };
     addAndMakeVisible (routeButton);
     linkStripButton.onClick = [this]
     {
-        ownerProcessor.setMultibandLinkedFromUi (
-            ! ownerProcessor.getCurrentMultibandParameters().linked);
+        const auto linked =
+            ! ownerProcessor.getCurrentMultibandParameters().linked;
+        ownerProcessor.setMultibandLinkedFromUi (linked);
+        linkStripButton.setToggleState (
+            linked, juce::dontSendNotification);
+        rebindContextualControls();
+        repaint();
     };
+    linkStripButton.setPreviewToggleOnPress (true);
     phaseStripButton.onClick = [this] { showPhaseMenu(); };
     addAndMakeVisible (linkStripButton);
     addAndMakeVisible (phaseStripButton);
@@ -2815,20 +3441,41 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     addAndMakeVisible (levelMeters);
     addAndMakeVisible (responseDisplay);
     multibandButton.setClickingTogglesState (true);
+    multibandButton.setPreviewToggleOnPress (true);
     multibandButton.onStateChange = [this]
     {
+        const auto enabled = multibandButton.getToggleState();
         multibandButton.setButtonText (
-            multibandButton.getToggleState()
-                ? "MULTIBAND  ON" : "MULTIBAND  OFF");
+            enabled ? "MULTIBAND  ON" : "MULTIBAND  OFF");
+        if (enabled != multibandVisible)
+            updateMultibandVisibility (enabled, true);
     };
     addAndMakeVisible (multibandButton);
     addAndMakeVisible (multibandPanel);
     multibandPanel.setVisible (initiallyExpanded);
+    settingsOverlay.setState (themeState);
+    settingsOverlay.onStateChange = [this] (
+        const default_family::ThemeState& next)
+    {
+        applyThemeState (next, true);
+    };
+    addAndMakeVisible (settingsOverlay);
+    settingsOverlay.setVisible (false);
+    updateOverlay.onOpenWebsite = [this]
+    {
+        juce::URL { "https://default-audio.github.io/" }
+            .launchInDefaultBrowser();
+        dismissUpdateAvailable();
+    };
+    updateOverlay.onDismiss = [this] { dismissUpdateAvailable(); };
+    addAndMakeVisible (updateOverlay);
+    updateOverlay.setVisible (false);
 
     // ParameterControl paints an opaque background. Keep the linked vertical
     // controls above their neighbouring knobs so neither the connector nor
     // the left frame edge can be covered at larger editor scales.
     asymStereoButton.toFront (false);
+    inputHpDetectorButton.toFront (false);
 
     drive.slider.setRange (0.0, 36.0, 0.01);
     secondary.slider.setRange (0.0, 1.0, 0.001);
@@ -2838,8 +3485,8 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     placement.slider.setRange (-100.0, 100.0, 0.1);
     dynamic.slider.setRange (-100.0, 100.0, 0.1);
     speed.slider.setRange (0.0, 100.0, 0.1);
-    inputHp.slider.setRange (0.0, 200.0, 0.1);
-    inputHp.slider.setSkewFactorFromMidPoint (20.0);
+    inputHp.slider.setRange (0.0, 2000.0, 0.1);
+    inputHp.slider.setSkewFactorFromMidPoint (44.72135955);
     outputLp.slider.setRange (2000.0, 20000.0, 1.0);
     outputLp.slider.setSkewFactorFromMidPoint (6324.555);
     mix.slider.setRange (0.0, 1.0, 0.001);
@@ -2875,8 +3522,11 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
     };
     inputHp.slider.textFromValueFunction = [] (double value)
     {
-        return value <= 0.5 ? juce::String { "OFF" }
-                            : juce::String (juce::roundToInt (value)) + " Hz";
+        if (value <= 0.5)
+            return juce::String { "OFF" };
+        return value >= 1000.0
+            ? juce::String (value / 1000.0, 2) + " kHz"
+            : juce::String (juce::roundToInt (value)) + " Hz";
     };
     outputLp.slider.textFromValueFunction = [] (double value)
     {
@@ -2924,7 +3574,7 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
             [this] (float value)
             {
                 static const std::array<juce::String, 4> labels {
-                    "OFF", "2×", "4×", "8×"
+                    "OFF", "2X", "4X", "8X"
                 };
                 qualityButton.setValueText (labels[static_cast<size_t> (
                     juce::jlimit (0, 3, juce::roundToInt (value)))]);
@@ -3013,13 +3663,17 @@ DefaultDistortionAudioProcessorEditor::DefaultDistortionAudioProcessorEditor (
              &stages, &placement, &dynamic, &speed,
              &inputHp, &outputLp, &mix, &output })
         control->applyPaletteColours();
-    startTimerHz (12);
+    startTimerHz (30);
 }
 
 DefaultDistortionAudioProcessorEditor::~DefaultDistortionAudioProcessorEditor()
 {
     stopTimer();
-    ownerProcessor.setAnalyzerEnabled (false);
+    default_family::EditorPreferences::saveScale (
+        static_cast<float> (getWidth())
+            / static_cast<float> (ui::designWidth));
+    ownerProcessor.setAnalyzerEnabled (false, false);
+    ownerProcessor.setMeteringEnabled (false);
     setLookAndFeel (nullptr);
 }
 
@@ -3057,6 +3711,7 @@ void DefaultDistortionAudioProcessorEditor::rebindContextualControls()
     dynamicAttachment.reset();
     speedAttachment.reset();
     inputHpAttachment.reset();
+    inputHpDetectorAttachment.reset();
     outputLpAttachment.reset();
     mixAttachment.reset();
     modeAttachment.reset();
@@ -3095,6 +3750,10 @@ void DefaultDistortionAudioProcessorEditor::rebindContextualControls()
         state, id (ParamIDs::speed, "Speed"), speed.slider);
     inputHpAttachment = std::make_unique<SliderAttachment> (
         state, id (ParamIDs::inputHp, "InputHp"), inputHp.slider);
+    inputHpDetectorAttachment = std::make_unique<ButtonAttachment> (
+        state,
+        id (ParamIDs::inputHpDetector, "InputHpDetector"),
+        inputHpDetectorButton);
     outputLpAttachment = std::make_unique<SliderAttachment> (
         state, id (ParamIDs::outputLp, "OutputLp"), outputLp.slider);
     mixAttachment = std::make_unique<SliderAttachment> (
@@ -3226,6 +3885,7 @@ void DefaultDistortionAudioProcessorEditor::updateMultibandVisibility (
         return;
     multibandVisible = enabled;
     multibandPanel.setVisible (enabled);
+    updateAnalyzerLifecycle();
     const auto targetHeight = static_cast<double> (
         enabled ? ui::expandedHeight : ui::compactHeight);
     if (resizeEditor)
@@ -3254,6 +3914,7 @@ void DefaultDistortionAudioProcessorEditor::updateMultibandVisibility (
 
 void DefaultDistortionAudioProcessorEditor::showModeMenu()
 {
+    hideSettingsOverlay();
     if (modeMenu != nullptr && modeMenu->isShowingFor (&modeButton))
     {
         modeMenu->close();
@@ -3302,6 +3963,7 @@ void DefaultDistortionAudioProcessorEditor::showModeMenu()
 
 void DefaultDistortionAudioProcessorEditor::showQualityMenu()
 {
+    hideSettingsOverlay();
     if (simpleMenu != nullptr
         && simpleMenu->isShowingFor (&qualityButton))
     {
@@ -3342,6 +4004,7 @@ void DefaultDistortionAudioProcessorEditor::showQualityMenu()
 
 void DefaultDistortionAudioProcessorEditor::showPhaseMenu()
 {
+    hideSettingsOverlay();
     if (simpleMenu != nullptr
         && simpleMenu->isShowingFor (&phaseStripButton))
     {
@@ -3506,16 +4169,147 @@ void DefaultDistortionAudioProcessorEditor::updateCharacterControl (int mode)
     character.repaint();
 }
 
-void DefaultDistortionAudioProcessorEditor::togglePalette()
+void DefaultDistortionAudioProcessorEditor::toggleSettingsOverlay()
 {
-    lookAndFeel.setInverted (! lookAndFeel.isInverted());
-    saveLightTheme (lookAndFeel.isInverted());
+    if (settingsOverlay.isVisible())
+    {
+        hideSettingsOverlay();
+        return;
+    }
+    if (simpleMenu != nullptr)
+        simpleMenu->close();
+    if (modeMenu != nullptr)
+        modeMenu->close();
+    settingsOverlay.setState (themeState);
+    settingsOverlay.setVisible (true);
+    settingsOverlay.toFront (false);
+    settingsOverlay.repaint();
+    updateAnalyzerLifecycle();
+}
+
+void DefaultDistortionAudioProcessorEditor::hideSettingsOverlay()
+{
+    settingsOverlay.dismissColourEditor();
+    settingsOverlay.setVisible (false);
+    updateAnalyzerLifecycle();
+}
+
+void DefaultDistortionAudioProcessorEditor::showUpdateAvailable (
+    const juce::String& latestVersion)
+{
+    if (simpleMenu != nullptr)
+        simpleMenu->close();
+    if (modeMenu != nullptr)
+        modeMenu->close();
+    hideSettingsOverlay();
+    updateOverlay.setLatestVersion (latestVersion);
+    updateOverlay.setVisible (true);
+    updateOverlay.toFront (false);
+    updateAnalyzerLifecycle();
+}
+
+void DefaultDistortionAudioProcessorEditor::dismissUpdateAvailable()
+{
+    updateOverlay.setVisible (false);
+    updateAnalyzerLifecycle();
+}
+
+void DefaultDistortionAudioProcessorEditor::applyThemeState (
+    const default_family::ThemeState& next,
+    bool persist)
+{
+    themeState = next;
+    themeState.mode = juce::jlimit (
+        (int) default_family::ThemePreferences::automatic,
+        (int) default_family::ThemePreferences::black,
+        themeState.mode);
+    if (persist)
+        default_family::ThemePreferences::save (themeState);
+    lookAndFeel.setThemeColours (
+        themeState.lightBackground, themeState.lightForeground,
+        themeState.darkBackground, themeState.darkForeground);
+    const auto dark = default_family::ThemePreferences::isDarkForHour (
+        themeState.mode, juce::Time::getCurrentTime().getHours());
+    lookAndFeel.setInverted (! dark);
+    settingsOverlay.setState (themeState);
     sendLookAndFeelChange();
+    for (auto* control : {
+             &drive, &character, &secondary, &asym, &tone,
+             &stages, &placement, &dynamic, &speed,
+             &inputHp, &outputLp, &mix, &output })
+        control->applyPaletteColours();
     repaint();
+}
+
+void DefaultDistortionAudioProcessorEditor::updateAnalyzerLifecycle()
+{
+    const auto editorVisible = isShowing();
+    const auto settingsVisible = settingsOverlay.isVisible();
+    const auto updateVisible = updateOverlay.isVisible();
+    const auto modalVisible = settingsVisible || updateVisible;
+    const auto spectrumVisible =
+        (multibandPanel.isVisible() && ! updateVisible) || settingsVisible;
+    ownerProcessor.setAnalyzerEnabled (
+        editorVisible && spectrumVisible,
+        editorVisible && settingsVisible);
+    ownerProcessor.setMeteringEnabled (editorVisible && ! modalVisible);
+    multibandPanel.setAnalyzerActive (editorVisible && spectrumVisible);
+    // ResponseDisplay performs no DSP analysis and skips work while hidden.
+    // Do not stop its recovery timer based on host visibility: several hosts
+    // transiently return false here during editor attachment.
+    responseDisplay.setRefreshActive (! modalVisible);
+    levelMeters.setRefreshActive (editorVisible && ! modalVisible);
+}
+
+void DefaultDistortionAudioProcessorEditor::visibilityChanged()
+{
+    AudioProcessorEditor::visibilityChanged();
+    // Keep one cheap recovery callback alive. timerCallback() already exits
+    // before polling parameters while the editor is not actually showing.
+    if (! isTimerRunning())
+        startTimerHz (30);
+    updateAnalyzerLifecycle();
+}
+
+bool DefaultDistortionAudioProcessorEditor::keyPressed (
+    const juce::KeyPress& key)
+{
+    if (key.getKeyCode() != juce::KeyPress::escapeKey)
+        return AudioProcessorEditor::keyPressed (key);
+    if (updateOverlay.isVisible())
+    {
+        dismissUpdateAvailable();
+        return true;
+    }
+    if (settingsOverlay.isVisible())
+    {
+        hideSettingsOverlay();
+        return true;
+    }
+    if (simpleMenu != nullptr)
+        simpleMenu->close();
+    if (modeMenu != nullptr)
+        modeMenu->close();
+    return true;
 }
 
 void DefaultDistortionAudioProcessorEditor::timerCallback()
 {
+    updateAnalyzerLifecycle();
+    if (! isShowing())
+        return;
+    updateChecker.startIfDue();
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    if (now - lastThemePollMilliseconds >= 500.0)
+    {
+        lastThemePollMilliseconds = now;
+        const auto sharedTheme = default_family::ThemePreferences::load (true);
+        const auto sharedDark = default_family::ThemePreferences::isDarkForHour (
+            sharedTheme.mode, juce::Time::getCurrentTime().getHours());
+        if (sharedTheme != themeState
+            || sharedDark == lookAndFeel.isInverted())
+            applyThemeState (sharedTheme, false);
+    }
     const auto multiband = ownerProcessor.getCurrentMultibandParameters();
     if (multiband.enabled != multibandVisible)
         updateMultibandVisibility (multiband.enabled, true);
@@ -3559,6 +4353,22 @@ void DefaultDistortionAudioProcessorEditor::timerCallback()
         ownerProcessor.getSmartAutoGainProgress(),
         displayedAutoGainMode == 2
             && ! ownerProcessor.isSmartAutoGainLocked());
+    if (settingsOverlay.isVisible())
+    {
+        const auto analyzer = ownerProcessor.getAnalyzerStatistics();
+        const auto spectrum = multibandPanel.getSpectrumStatistics();
+        settingsOverlay.setStatistics ({
+            analyzer.crestDeltaDb,
+            analyzer.levelDeltaDb,
+            spectrum.tiltDeltaDbPerOctave,
+            ownerProcessor.getSmartAutoGainProgress(),
+            ownerProcessor.getSmartAutoGainDb(),
+            spectrum.spectrumValid,
+            analyzer.valid,
+            displayedAutoGainMode == 2,
+            ownerProcessor.isSmartAutoGainLocked()
+        });
+    }
 }
 
 void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
@@ -3577,11 +4387,14 @@ void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
     auto rect = [scale, offsetX, offsetY] (
                     float x, float y, float width, float height)
     {
-        return juce::Rectangle<float> (
-            offsetX + x * scale,
-            offsetY + y * scale,
-            width * scale,
-            height * scale);
+        const auto left = juce::roundToInt (offsetX + x * scale);
+        const auto top = juce::roundToInt (offsetY + y * scale);
+        const auto right = juce::roundToInt (
+            offsetX + (x + width) * scale);
+        const auto bottom = juce::roundToInt (
+            offsetY + (y + height) * scale);
+        return juce::Rectangle<int> (
+            left, top, right - left, bottom - top);
     };
 
     const auto foreground = foregroundOf (*this);
@@ -3607,6 +4420,9 @@ void DefaultDistortionAudioProcessorEditor::paint (juce::Graphics& graphics)
 void DefaultDistortionAudioProcessorEditor::paintOverChildren (
     juce::Graphics& graphics)
 {
+    if (updateOverlay.isVisible())
+        return;
+
     const auto designHeight = static_cast<float> (
         multibandVisible ? ui::expandedHeight : ui::compactHeight);
     const auto scale = juce::jmin (
@@ -3622,42 +4438,60 @@ void DefaultDistortionAudioProcessorEditor::paintOverChildren (
                                juce::Colour colour = juce::Colour {})
     {
         graphics.setColour (colour.isTransparent() ? ink : colour);
-        graphics.fillRect (offsetX + x * scale,
-                           offsetY + y * scale,
-                           juce::jmax (1.0f, scale),
-                           height * scale);
+        const auto left = juce::roundToInt (offsetX + x * scale);
+        const auto top = juce::roundToInt (offsetY + y * scale);
+        const auto bottom = juce::roundToInt (
+            offsetY + (y + height) * scale);
+        const auto right = juce::roundToInt (
+            offsetX + (x + 1.0f) * scale);
+        graphics.fillRect (
+            left, top, juce::jmax (1, right - left),
+            bottom - top);
     };
     const auto horizontal = [&] (float x, float y, float width)
     {
         graphics.setColour (ink);
-        graphics.fillRect (offsetX + x * scale,
-                           offsetY + y * scale,
-                           width * scale,
-                           juce::jmax (1.0f, scale));
+        const auto left = juce::roundToInt (offsetX + x * scale);
+        const auto right = juce::roundToInt (
+            offsetX + (x + width) * scale);
+        const auto top = juce::roundToInt (offsetY + y * scale);
+        const auto bottom = juce::roundToInt (
+            offsetY + (y + 1.0f) * scale);
+        graphics.fillRect (
+            left, top, right - left,
+            juce::jmax (1, bottom - top));
     };
 
-    vertical (404.0f, 4.0f, 60.0f);
+    vertical (403.0f, 4.0f, 60.0f);
     vertical (463.0f, 4.0f, 60.0f);
     vertical (573.0f, 4.0f, 60.0f);
     vertical (204.0f, 13.0f, 42.0f);
     graphics.setColour (ink);
-    graphics.fillRect (offsetX + 200.0f * scale,
-                       offsetY + 4.0f * scale,
-                       9.0f * scale,
-                       9.0f * scale);
-    graphics.fillRect (offsetX + 200.0f * scale,
-                       offsetY + 55.0f * scale,
-                       9.0f * scale,
-                       9.0f * scale);
+    const auto cornerBlock = [&] (float y)
+    {
+        const auto left = juce::roundToInt (offsetX + 200.0f * scale);
+        const auto top = juce::roundToInt (offsetY + y * scale);
+        const auto right = juce::roundToInt (offsetX + 209.0f * scale);
+        const auto bottom = juce::roundToInt (
+            offsetY + (y + 9.0f) * scale);
+        graphics.fillRect (left, top, right - left, bottom - top);
+    };
+    cornerBlock (4.0f);
+    cornerBlock (55.0f);
 
-    for (const auto x : { 103.0f, 203.0f, 303.0f, 403.0f, 463.0f })
-        vertical (x, 68.0f, 182.0f);
-    horizontal (4.0f, 128.0f, 400.0f);
-    horizontal (4.0f, 189.0f, 400.0f);
+    if (! settingsOverlay.isVisible())
+    {
+        for (const auto x : { 103.0f, 203.0f, 303.0f, 403.0f, 463.0f })
+            vertical (x, 68.0f, 182.0f);
+        horizontal (4.0f, 128.0f, 400.0f);
+        horizontal (4.0f, 189.0f, 256.0f);
+        horizontal (274.0f, 189.0f, 130.0f);
+    }
 
-    const auto multiband = ownerProcessor.getCurrentMultibandParameters();
     vertical (203.0f, 254.0f, 28.0f,
-              multiband.enabled && multiband.linked ? paper : ink);
+              multibandButton.getDisplayedToggleState()
+                      && linkStripButton.getDisplayedToggleState()
+                  ? paper : ink);
     for (const auto x : { 303.0f, 403.0f, 463.0f })
         vertical (x, 254.0f, 28.0f);
 }
@@ -3717,9 +4551,10 @@ void DefaultDistortionAudioProcessorEditor::resized()
     placement.setBounds (place (ui::controls[5]));
     dynamic.setBounds (place (ui::controls[6]));
     speed.setBounds (place (ui::controls[7]));
-    inputHp.setBounds (place (ui::controls[8]));
-    tone.setBounds (place (ui::controls[9]));
-    stages.setBounds (place (ui::controls[10]));
+    tone.setBounds (place (ui::controls[8]));
+    stages.setBounds (place (ui::controls[9]));
+    inputHp.setBounds (place (ui::controls[10]));
+    inputHpDetectorButton.setBounds (place (ui::inputHpDetectorToggle));
     outputLp.setBounds (place (ui::controls[11]));
     levelMeters.setBounds (place (ui::meters));
     responseDisplay.setBounds (place (ui::response));
@@ -3729,6 +4564,14 @@ void DefaultDistortionAudioProcessorEditor::resized()
     mix.setBounds (place (ui::utilityCells[3]));
     output.setBounds (place (ui::utilityCells[4]));
     multibandPanel.setBounds (place (ui::multibandPanel));
+    settingsOverlay.setBounds (place (ui::main));
+    updateOverlay.setBounds (getLocalBounds());
+    if (updateOverlay.isVisible())
+        updateOverlay.toFront (false);
+    else if (settingsOverlay.isVisible())
+        settingsOverlay.toFront (false);
+    else
+        inputHpDetectorButton.toFront (false);
     sendLookAndFeelChange();
 }
 } // namespace dd

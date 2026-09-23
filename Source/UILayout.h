@@ -21,8 +21,8 @@ inline constexpr Bounds header { 4, 4, 640, 60 };
 inline constexpr Bounds brand { 4, 4, 200, 60 };
 inline constexpr Bounds algorithmPrevious { 204, 4, 22, 60 };
 inline constexpr Bounds algorithm { 226, 4, 157, 60 };
-inline constexpr Bounds algorithmNext { 383, 4, 22, 60 };
-inline constexpr Bounds oversampling { 405, 4, 59, 60 };
+inline constexpr Bounds algorithmNext { 383, 4, 21, 60 };
+inline constexpr Bounds oversampling { 404, 4, 60, 60 };
 inline constexpr Bounds autoGain { 464, 4, 110, 60 };
 inline constexpr Bounds power { 574, 4, 70, 60 };
 
@@ -36,6 +36,7 @@ inline constexpr std::array<Bounds, 12> controls {{
     { 204, 190, 100, 60 }, { 304, 190, 100, 60 }
 }};
 inline constexpr Bounds stereoToggle { 354, 76, 18, 44 };
+inline constexpr Bounds inputHpDetectorToggle { 260, 177, 14, 24 };
 inline constexpr Bounds meters { 404, 68, 60, 182 };
 inline constexpr Bounds response { 464, 68, 180, 182 };
 
@@ -49,6 +50,9 @@ inline constexpr Bounds multibandPanel { 0, 282, 648, 168 };
 inline constexpr Bounds rta { 4, 286, 640, 160 };
 
 static_assert (main.x + 400 == meters.x);
+static_assert (algorithmNext.x + algorithmNext.width == meters.x);
+static_assert (oversampling.x == meters.x);
+static_assert (oversampling.x + oversampling.width == autoGain.x);
 static_assert (meters.x + meters.width == response.x);
 static_assert (response.x + response.width == main.x + main.width);
 static_assert (utilityCells[2].x + utilityCells[2].width == meters.x);

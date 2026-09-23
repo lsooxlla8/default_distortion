@@ -1,6 +1,8 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "UI/DefaultFamilyTheme.h"
+#include "UpdateChecker.h"
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
@@ -24,6 +26,10 @@ public:
 
     GeometricLookAndFeel();
     void setInverted (bool shouldBeInverted);
+    void setThemeColours (juce::Colour lightBackground,
+                          juce::Colour lightForeground,
+                          juce::Colour darkBackground,
+                          juce::Colour darkForeground);
     void setUiScale (float newScale) noexcept;
     [[nodiscard]] bool isInverted() const noexcept { return inverted; }
     [[nodiscard]] float getUiScale() const noexcept { return uiScale; }
@@ -52,6 +58,10 @@ public:
     juce::Slider::SliderLayout getSliderLayout (juce::Slider&) override;
     juce::Label* createSliderTextBox (juce::Slider&) override;
     void drawLabel (juce::Graphics&, juce::Label&) override;
+    void drawTextEditorOutline (juce::Graphics&,
+                                int width,
+                                int height,
+                                juce::TextEditor&) override;
 
     void drawComboBox (juce::Graphics&,
                        int width,
@@ -83,13 +93,10 @@ private:
     void applyPalette();
     bool inverted = true;
     float uiScale = 1.0f;
-};
-
-class BrandButton final : public juce::TextButton
-{
-public:
-    BrandButton();
-    void paintButton (juce::Graphics&, bool, bool) override;
+    juce::Colour lightBackgroundColour { 0xfff6f6f6 };
+    juce::Colour lightForegroundColour { 0xff050505 };
+    juce::Colour darkBackgroundColour { 0xff050505 };
+    juce::Colour darkForegroundColour { 0xfff6f6f6 };
 };
 
 class ResettableSlider : public juce::Slider
@@ -104,9 +111,80 @@ class VerticalDragSlider final : public ResettableSlider
 public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
 
 private:
     double dragStartProportion = 0.0;
+    bool verticalDragActive = false;
+};
+
+class DistortionSettingsOverlay final : public juce::Component,
+                                        private juce::ChangeListener
+{
+public:
+    struct Statistics
+    {
+        float crestDeltaDb = 0.0f;
+        float levelDeltaDb = 0.0f;
+        float tiltDeltaDbPerOctave = 0.0f;
+        float smartProgress = 0.0f;
+        float smartGainDb = 0.0f;
+        bool spectrumValid = false;
+        bool timeValid = false;
+        bool smartEnabled = false;
+        bool smartLocked = false;
+    };
+
+    explicit DistortionSettingsOverlay (
+        juce::AudioProcessorValueTreeState&);
+    ~DistortionSettingsOverlay() override;
+    std::function<void (const default_family::ThemeState&)> onStateChange;
+    void setState (default_family::ThemeState);
+    [[nodiscard]] const default_family::ThemeState& getState() const noexcept
+    {
+        return state;
+    }
+    void setStatistics (Statistics);
+    void dismissColourEditor();
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+
+private:
+    enum class Cell
+    {
+        none,
+        theme,
+        lightBackground,
+        lightForeground,
+        darkBackground,
+        darkForeground
+    };
+    [[nodiscard]] Cell cellAt (juce::Point<int>) const noexcept;
+    void showColourEditor (Cell);
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
+
+    default_family::ThemeState state;
+    Statistics statistics;
+    Cell editedColour = Cell::none;
+    std::unique_ptr<juce::ColourSelector> colourSelector;
+    VerticalDragSlider transientStrength;
+    VerticalDragSlider transientBalance;
+    VerticalDragSlider transientHold;
+    VerticalDragSlider transientSmooth;
+    using SliderAttachment =
+        juce::AudioProcessorValueTreeState::SliderAttachment;
+    std::unique_ptr<SliderAttachment> transientStrengthAttachment;
+    std::unique_ptr<SliderAttachment> transientBalanceAttachment;
+    std::unique_ptr<SliderAttachment> transientHoldAttachment;
+    std::unique_ptr<SliderAttachment> transientSmoothAttachment;
+};
+
+class BrandButton final : public juce::TextButton
+{
+public:
+    BrandButton();
+    void paintButton (juce::Graphics&, bool, bool) override;
 };
 
 class ParameterControl final : public juce::Component
@@ -180,13 +258,35 @@ class StripButton final : public juce::TextButton
 {
 public:
     explicit StripButton (juce::String text);
+    void setPreviewToggleOnPress (bool shouldPreview) noexcept
+    {
+        previewToggleOnPress = shouldPreview;
+    }
+    [[nodiscard]] bool getDisplayedToggleState() const noexcept
+    {
+        return previewToggleOnPress && isDown()
+            ? ! getToggleState()
+            : getToggleState();
+    }
     void paintButton (juce::Graphics&, bool, bool) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    bool previewToggleOnPress = false;
 };
 
 class RtaBandButton final : public juce::TextButton
 {
 public:
     explicit RtaBandButton (juce::String text);
+    void paintButton (juce::Graphics&, bool, bool) override;
+};
+
+class InputHpRouteButton final : public juce::TextButton
+{
+public:
+    InputHpRouteButton();
     void paintButton (juce::Graphics&, bool, bool) override;
 };
 
@@ -218,11 +318,17 @@ class ResponseDisplay final : public juce::Component,
 public:
     explicit ResponseDisplay (DefaultDistortionAudioProcessor&);
     ~ResponseDisplay() override;
+    void setRefreshActive (bool);
+    [[nodiscard]] bool isRefreshActive() const noexcept
+    {
+        return isTimerRunning();
+    }
 
     void paint (juce::Graphics&) override;
 
 private:
     void timerCallback() override;
+    bool updateVisualization();
 
     DefaultDistortionAudioProcessor& processor;
     DistortionEngine::Visualization visualization;
@@ -237,6 +343,7 @@ class LevelMeterPanel final : public juce::Component,
 public:
     explicit LevelMeterPanel (DefaultDistortionAudioProcessor&);
     ~LevelMeterPanel() override;
+    void setRefreshActive (bool);
     void paint (juce::Graphics&) override;
 
 private:
@@ -263,6 +370,12 @@ class MultibandPanel final : public juce::Component,
                              private juce::Timer
 {
 public:
+    struct SpectrumStatistics
+    {
+        float tiltDeltaDbPerOctave = 0.0f;
+        bool spectrumValid = false;
+    };
+
     explicit MultibandPanel (DefaultDistortionAudioProcessor&);
     ~MultibandPanel() override;
 
@@ -274,6 +387,11 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    [[nodiscard]] SpectrumStatistics getSpectrumStatistics() const noexcept
+    {
+        return spectrumStatistics;
+    }
+    void setAnalyzerActive (bool);
 
 private:
     static constexpr int fftSize = SpectrumFIFO::fftSize;
@@ -311,12 +429,14 @@ private:
     void endTrimDrag();
     void showBandCountMenu();
     void showSlopeMenu (int crossover);
+    void layoutBandButtons (const MultibandParameters&);
 
     DefaultDistortionAudioProcessor& processor;
     std::array<float, fftSize / 2> inputSpectrum {};
     std::array<float, fftSize / 2> outputSpectrum {};
     std::array<float, fftSize / 2> incomingInput {};
     std::array<float, fftSize / 2> incomingOutput {};
+    SpectrumStatistics spectrumStatistics;
     int hoveredCrossover = -1;
     int draggedCrossover = -1;
     int hoveredTrimBand = -1;
@@ -324,6 +444,7 @@ private:
     int draggedTrimBand = -1;
     int trimBoundBand = -1;
     int laidOutBandCount = -1;
+    bool analyzerActive = false;
     juce::RangedAudioParameter* draggedTrimParameter = nullptr;
 
     juce::TextButton linkButton { "LINK" };
@@ -345,6 +466,25 @@ private:
         trimAttachment;
 };
 
+class UpdateAvailableOverlay final : public juce::Component
+{
+public:
+    UpdateAvailableOverlay();
+    void setLatestVersion (const juce::String&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+    std::function<void()> onOpenWebsite;
+    std::function<void()> onDismiss;
+
+private:
+    [[nodiscard]] juce::Rectangle<int> panelBounds() const;
+
+    juce::String latestVersion;
+    juce::TextButton openWebsiteButton { "OPEN DEFAULT-AUDIO" };
+    juce::TextButton laterButton { "LATER" };
+};
+
 class DefaultDistortionAudioProcessorEditor final
     : public juce::AudioProcessorEditor,
       private juce::Timer
@@ -357,6 +497,8 @@ public:
     void paint (juce::Graphics&) override;
     void paintOverChildren (juce::Graphics&) override;
     void resized() override;
+    void visibilityChanged() override;
+    bool keyPressed (const juce::KeyPress&) override;
 
 private:
     using SliderAttachment =
@@ -380,7 +522,12 @@ private:
     void updateBandGroupDrag (float displayedValue);
     void endBandGroupDrag();
     void updateMultibandVisibility (bool enabled, bool resizeEditor);
-    void togglePalette();
+    void toggleSettingsOverlay();
+    void hideSettingsOverlay();
+    void showUpdateAvailable (const juce::String& latestVersion);
+    void dismissUpdateAvailable();
+    void applyThemeState (const default_family::ThemeState&, bool persist);
+    void updateAnalyzerLifecycle();
 
     DefaultDistortionAudioProcessor& ownerProcessor;
     GeometricLookAndFeel lookAndFeel;
@@ -397,6 +544,7 @@ private:
     StripButton linkStripButton { "LINK" };
     StripButton phaseStripButton { "PHASE  MINIMUM" };
     VerticalTextButton asymStereoButton;
+    InputHpRouteButton inputHpDetectorButton;
 
     ParameterControl drive { "DRIVE" };
     ParameterControl character { "CURVE" };
@@ -414,6 +562,9 @@ private:
     ResponseDisplay responseDisplay;
     LevelMeterPanel levelMeters;
     MultibandPanel multibandPanel;
+    DistortionSettingsOverlay settingsOverlay;
+    UpdateAvailableOverlay updateOverlay;
+    update::UpdateChecker updateChecker;
 
     std::unique_ptr<SliderAttachment> driveAttachment;
     std::unique_ptr<SliderAttachment> secondaryAttachment;
@@ -427,6 +578,7 @@ private:
     std::unique_ptr<SliderAttachment> dynamicAttachment;
     std::unique_ptr<SliderAttachment> speedAttachment;
     std::unique_ptr<SliderAttachment> inputHpAttachment;
+    std::unique_ptr<ButtonAttachment> inputHpDetectorAttachment;
     std::unique_ptr<SliderAttachment> outputLpAttachment;
     std::unique_ptr<juce::ParameterAttachment> modeAttachment;
     std::unique_ptr<juce::ParameterAttachment> autoGainAttachment;
@@ -440,6 +592,8 @@ private:
 
     int displayedMode = -1;
     int displayedAutoGainMode = -1;
+    default_family::ThemeState themeState;
+    double lastThemePollMilliseconds = 0.0;
     bool updatingCharacter = false;
     int boundBand = -2;
     struct BandGroupDrag
