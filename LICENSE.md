@@ -9,6 +9,10 @@ Public License, version 3 only (`AGPL-3.0-only`).
 The complete licence text is in
 [`LICENSES/AGPL-3.0.txt`](LICENSES/AGPL-3.0.txt).
 
+The ZLSplitter-derived transient/sustain implementation in
+`Source/TransientSplitter.h` remains `AGPL-3.0-only`; its exact upstream
+revision and adaptation boundary are recorded in `THIRD_PARTY_NOTICES.md`.
+
 The adapted CHOW/BYOD hysteresis source remains available under
 `GPL-3.0-only`; the copied/adapted Vital clipping code remains available under
 `GPL-3.0-or-later`. The complete GPL text is in

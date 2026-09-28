@@ -68,6 +68,18 @@ cmake --build build --config Release --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+## Install
+
+Download the installer for your platform from the
+[latest GitHub release](https://github.com/lsooxlla8/default_distortion/releases/latest):
+
+- macOS: open the universal `.pkg` installer;
+- Windows: run the x64 `Setup.exe` installer;
+- Linux: make the x64 `.run` installer executable and run it. It installs for
+  the current user by default; pass `--system` as root for a system-wide install.
+
+Release checksums are published alongside the installers in `SHA256SUMS`.
+
 ## Licence
 
 default_distortion is open source under `AGPL-3.0-only`. The adapted CHOW/BYOD

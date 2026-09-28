@@ -62,8 +62,8 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-WebKit and Curl are deliberately disabled because the plug-in does not use a
-web browser or networking.
+WebKit remains disabled. Network support is enabled only for the asynchronous
+GitHub release check; no web browser is embedded in the plug-in.
 
 ## Auto Gain reference tables
 
@@ -115,8 +115,13 @@ to the other 25 modes.
 
 Pushes and pull requests build downloadable CI artifacts. Pushing a tag whose
 name begins with `v`, for example `v0.5.7`, also creates a GitHub Release and
-attaches the three platform packages. The numeric tag should match the version
-declared by `project(... VERSION ...)` in `CMakeLists.txt`.
+attaches a Windows x64 `.exe` installer, a universal macOS `.pkg`, a Linux x64
+self-extracting `.run` installer, and `SHA256SUMS`. The numeric tag should match
+the version declared by `project(... VERSION ...)` in `CMakeLists.txt`.
+
+The Linux installer defaults to the current user (`~/.vst3`, `~/.lv2`, and
+`~/.local/bin`) and accepts `--system` when run as root to install under
+`/usr/local`.
 
 macOS CI artifacts are ad-hoc signed. A broadly distributed macOS release
 still requires Developer ID signing and Apple notarization. Windows binaries
