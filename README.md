@@ -1,6 +1,6 @@
 # default_distortion
 
-![default_distortion plug-in interface](docs/default_distortion-multiband-v2.png)
+![default_distortion plug-in interface in light theme](docs/default_distortion-multiband-light.png)
 
 **default_distortion** is designed to be your ultimate go-to plugin whenever
 you need to clip, saturate, distort, or completely degrade your audio signal.
@@ -8,6 +8,10 @@ you need to clip, saturate, distort, or completely degrade your audio signal.
 Packed with 30 classic saturation algorithms, it features a flexible
 multiband mode, oversampling, and a sleek, modern UI. Despite its powerful
 capabilities, the plugin is heavily optimized for CPU efficiency.
+
+New controls include dynamic drive, M/S and transient/sustain routing, input HP
+and output LP filters, selectable crossover slopes and phase, and a real-time
+spectrum analyzer.
 
 Take full control of your loudness with two distinct auto-gain modes:
 - **Regular Auto Gain:** Automatically and independently compensates for volume
@@ -23,6 +27,9 @@ Output stage.
 - [CHOW Tape Model](https://github.com/jatinchowdhury18/AnalogTapeModel) and
   [BYOD](https://github.com/Chowdhury-DSP/BYOD) by Jatin Chowdhury and
   contributors — GPLv3 tape-hysteresis code.
+- [ZLSplitter](https://github.com/ZL-Audio/ZLSplitter) by zsliu98 and ZL-Audio
+  contributors — AGPLv3 transient/sustain separation code.
+- [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) — OFL 1.1 font.
 - [JUCE](https://github.com/juce-framework/JUCE) — AGPLv3 plug-in framework.
 - Exact revisions and licences:
   [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
