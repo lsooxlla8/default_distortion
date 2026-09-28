@@ -13,6 +13,7 @@ namespace
 {
 constexpr std::array<float, MultibandParameters::maximumCrossovers>
     defaultCrossoverFrequencies { 100.0f, 500.0f, 2000.0f };
+constexpr float updateSecondaryFontSize = 18.0f;
 const std::array<juce::String, DistortionEngine::modeCount>
     prototypeModeNamesByDisplay {
         "SOFT CLIP", "HARD CLIP", "DIODE", "TRIODE", "TRANSISTOR",
@@ -145,18 +146,65 @@ bool differs (float first, float second) noexcept
 
 } // namespace
 
+UpdateActionButton::UpdateActionButton (juce::String text,
+                                        bool showDownloadArrow)
+    : juce::TextButton (std::move (text)),
+      showsArrow (showDownloadArrow)
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    setWantsKeyboardFocus (false);
+}
+
+void UpdateActionButton::paintButton (juce::Graphics& graphics,
+                                      bool isHighlighted,
+                                      bool isDown)
+{
+    const auto foreground = foregroundOf (*this);
+    const auto background = backgroundOf (*this);
+    const auto active = isHighlighted || isDown;
+    const auto scale = scaleOf (*this);
+    const auto textColour = active
+        ? background
+        : (showsArrow ? foreground : mutedOf (*this));
+    graphics.fillAll (active ? foreground : background);
+    auto bounds = getLocalBounds().toFloat().reduced (14.0f * scale, 0.0f);
+    drawPrototypeText (
+        graphics,
+        getButtonText(),
+        bounds,
+        updateSecondaryFontSize,
+        showsArrow,
+        -0.025f,
+        textColour,
+        juce::Justification::centredLeft,
+        scale);
+    if (showsArrow)
+    {
+        const auto arrowWidth = juce::roundToInt (30.0f * scale);
+        drawPrototypeText (
+            graphics,
+            juce::String::charToString (
+                static_cast<juce::juce_wchar> (0x2193)),
+            getLocalBounds().removeFromRight (arrowWidth).toFloat(),
+            updateSecondaryFontSize + 2.0f,
+            false,
+            0.0f,
+            active ? background : foreground,
+            juce::Justification::centred,
+            scale);
+    }
+}
+
 UpdateAvailableOverlay::UpdateAvailableOverlay()
 {
     setName ("Update available overlay");
     setVisible (false);
     setInterceptsMouseClicks (true, true);
-    for (auto* button : { &openWebsiteButton, &laterButton })
+    for (auto* button : { &downloadButton, &laterButton })
     {
-        button->setMouseCursor (juce::MouseCursor::PointingHandCursor);
-        button->setWantsKeyboardFocus (false);
         addAndMakeVisible (*button);
     }
-    openWebsiteButton.onClick = [this]
+    downloadButton.onClick = [this]
     {
         if (onOpenWebsite)
             onOpenWebsite();
@@ -179,9 +227,9 @@ juce::Rectangle<int> UpdateAvailableOverlay::panelBounds() const
     const auto scale = scaleOf (*this);
     const auto margin = juce::roundToInt (20.0f * scale);
     const auto width = juce::jmin (
-        getWidth() - 2 * margin, juce::roundToInt (440.0f * scale));
+        getWidth() - 2 * margin, juce::roundToInt (480.0f * scale));
     const auto height = juce::jmin (
-        getHeight() - 2 * margin, juce::roundToInt (164.0f * scale));
+        getHeight() - 2 * margin, juce::roundToInt (176.0f * scale));
     return getLocalBounds().withSizeKeepingCentre (
         juce::jmax (1, width), juce::jmax (1, height));
 }
@@ -197,38 +245,70 @@ void UpdateAvailableOverlay::paint (juce::Graphics& graphics)
     graphics.setColour (background);
     graphics.fillRect (panel);
     graphics.setColour (foreground);
-    graphics.drawRect (
-        panel, juce::jmax (1, juce::roundToInt (2.0f * scale)));
+    const auto line = juce::jmax (1, juce::roundToInt (2.0f * scale));
+    graphics.drawRect (panel, line);
 
-    auto text = panel.reduced (juce::roundToInt (20.0f * scale));
-    const auto buttonHeight = juce::roundToInt (34.0f * scale);
-    text.removeFromBottom (buttonHeight + juce::roundToInt (16.0f * scale));
-    auto title = text.removeFromTop (juce::roundToInt (32.0f * scale));
+    const auto actionHeight = juce::roundToInt (54.0f * scale);
+    const auto actionTop = panel.getBottom() - actionHeight;
+    const auto divider = panel.getX()
+        + juce::roundToInt (
+            static_cast<float> (panel.getWidth()) * 0.60f);
+    graphics.fillRect (panel.getX(), actionTop, panel.getWidth(), line);
+    graphics.fillRect (divider, panel.getY(), line, panel.getHeight());
+
+    const auto inset = juce::roundToInt (16.0f * scale);
+    auto title = juce::Rectangle<int> (
+        panel.getX(), panel.getY(), divider - panel.getX(),
+        actionTop - panel.getY());
+    title = title.reduced (inset, juce::roundToInt (9.0f * scale));
+    auto upperTitle = title.removeFromTop (title.getHeight() / 2);
     drawPrototypeText (
-        graphics, "UPDATE AVAILABLE", title.toFloat(), 13.0f, true,
-        0.06f, foreground, juce::Justification::centredLeft, scale);
-    const auto message = "VERSION " + latestVersion
-        + " IS AVAILABLE. DOWNLOAD IT FROM DEFAULT-AUDIO.";
-    graphics.setColour (foreground);
-    graphics.setFont (trackedMonoFont (10.5f, false, 0.02f, scale));
-    graphics.drawFittedText (
-        message,
-        text,
-        juce::Justification::centredLeft,
-        2,
-        1.0f);
+        graphics, "UPDATE", upperTitle.toFloat(), 35.0f, true, -0.055f,
+        foreground, juce::Justification::centredLeft, scale);
+    drawPrototypeText (
+        graphics, "AVAILABLE", title.toFloat(), 35.0f, true, -0.055f,
+        foreground, juce::Justification::centredLeft, scale);
+
+    auto version = juce::Rectangle<int> (
+        divider + line, panel.getY(), panel.getRight() - divider - line,
+        actionTop - panel.getY());
+    version = version.reduced (inset, juce::roundToInt (16.0f * scale));
+    auto versionLabel = version.removeFromTop (
+        juce::roundToInt (28.0f * scale));
+    auto availability = version.removeFromBottom (
+        juce::roundToInt (28.0f * scale));
+    drawPrototypeText (
+        graphics, "VERSION", versionLabel.toFloat(),
+        updateSecondaryFontSize, false, -0.025f, mutedOf (*this),
+        juce::Justification::centredLeft, scale);
+    drawPrototypeText (
+        graphics, latestVersion, version.toFloat(),
+        updateSecondaryFontSize, true, -0.025f, foreground,
+        juce::Justification::centredLeft, scale);
+    drawPrototypeText (
+        graphics, "IS AVAILABLE", availability.toFloat(),
+        updateSecondaryFontSize, false, -0.025f, mutedOf (*this),
+        juce::Justification::centredLeft, scale);
 }
 
 void UpdateAvailableOverlay::resized()
 {
     const auto scale = scaleOf (*this);
-    auto buttons = panelBounds().reduced (juce::roundToInt (20.0f * scale));
-    buttons = buttons.removeFromBottom (juce::roundToInt (34.0f * scale));
-    const auto gap = juce::roundToInt (8.0f * scale);
-    const auto laterWidth = juce::roundToInt (92.0f * scale);
-    laterButton.setBounds (buttons.removeFromRight (laterWidth));
-    buttons.removeFromRight (gap);
-    openWebsiteButton.setBounds (buttons);
+    const auto panel = panelBounds();
+    const auto line = juce::jmax (1, juce::roundToInt (2.0f * scale));
+    const auto actionHeight = juce::roundToInt (54.0f * scale);
+    const auto actionTop = panel.getBottom() - actionHeight + line;
+    const auto divider = panel.getX()
+        + juce::roundToInt (
+            static_cast<float> (panel.getWidth()) * 0.60f);
+    downloadButton.setBounds (
+        panel.getX() + line, actionTop,
+        divider - panel.getX() - line,
+        panel.getBottom() - actionTop - line);
+    laterButton.setBounds (
+        divider + line, actionTop,
+        panel.getRight() - divider - 2 * line,
+        panel.getBottom() - actionTop - line);
 }
 
 class PrototypeSimpleMenuWindow final : public juce::Component

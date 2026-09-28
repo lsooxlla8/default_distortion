@@ -62,8 +62,8 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-WebKit and Curl are deliberately disabled because the plug-in does not use a
-web browser or networking.
+WebKit remains disabled. Network support is enabled only for the asynchronous
+GitHub release check; no web browser is embedded in the plug-in.
 
 ## Auto Gain reference tables
 

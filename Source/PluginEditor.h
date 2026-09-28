@@ -466,6 +466,16 @@ private:
         trimAttachment;
 };
 
+class UpdateActionButton final : public juce::TextButton
+{
+public:
+    UpdateActionButton (juce::String text, bool showDownloadArrow);
+    void paintButton (juce::Graphics&, bool, bool) override;
+
+private:
+    bool showsArrow = false;
+};
+
 class UpdateAvailableOverlay final : public juce::Component
 {
 public:
@@ -481,8 +491,8 @@ private:
     [[nodiscard]] juce::Rectangle<int> panelBounds() const;
 
     juce::String latestVersion;
-    juce::TextButton openWebsiteButton { "OPEN DEFAULT-AUDIO" };
-    juce::TextButton laterButton { "LATER" };
+    UpdateActionButton downloadButton { "DOWNLOAD", true };
+    UpdateActionButton laterButton { "LATER", false };
 };
 
 class DefaultDistortionAudioProcessorEditor final

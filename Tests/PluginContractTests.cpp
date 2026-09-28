@@ -297,12 +297,19 @@ void testUpdatePolicyContract (TestContext& context)
     overlay.setLookAndFeel (&look);
     overlay.setBounds (0, 0, dd::ui::designWidth, dd::ui::compactHeight);
     overlay.setLatestVersion ("0.10.0");
-    auto* open = findButton (overlay, "OPEN DEFAULT-AUDIO");
+    auto* open = findButton (overlay, "DOWNLOAD");
     auto* later = findButton (overlay, "LATER");
-    context.expect (
-        open != nullptr && later != nullptr
-            && open->getBounds().getWidth() > later->getBounds().getWidth(),
-        "Styled update window buttons are missing or mis-sized");
+    context.expect (open != nullptr && later != nullptr,
+                    "Styled update window buttons are missing");
+    if (open != nullptr && later != nullptr)
+        context.expect (
+            ! open->getBounds().isEmpty()
+                && ! later->getBounds().isEmpty()
+                && ! open->getBounds().intersects (later->getBounds())
+                && open->getBounds().getWidth() > later->getBounds().getWidth()
+                && overlay.getLocalBounds().contains (open->getBounds())
+                && overlay.getLocalBounds().contains (later->getBounds()),
+            "Update window action geometry is invalid");
     overlay.setLookAndFeel (nullptr);
 }
 
